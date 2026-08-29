@@ -119,17 +119,23 @@ Consequences:
 - Existing mismatched or extra content raises an error and is not overwritten.
 - Source `initial.md` is never modified by packaging.
 
-## Phase 3 integration checks
+## Phase 3 config verification and later runtime checks
 
-Phase 2 validates the filesystem artifact and the audited Harbor 0.20.0 schema
-without running Harbor. Phase 3 must still verify:
+Phase 3 now verifies, without running a job, that generated skill directory
+paths and blank `[]` values survive deterministic JSON serialization and are
+accepted by Harbor 0.20.0's public `--print-config` parser. It also enforces a
+pure-logic baseline/SkillOpt parity check whose only skill-related config
+difference is `agents[].skills`.
 
-1. a generated directory survives the real job-config serialization and
-   Harbor upload path;
-2. Terminal-Bench task configuration does not override `skills_dir` with an
-   incompatible relative path;
-3. Terminus-2 lists the generated frontmatter and the target model reads the
-   referenced `SKILL.md` during an actual single-task run;
-4. blank packaging reaches the real job as exactly `agents[].skills: []`;
-5. Harbor's emitted job-lock skill digest matches the uploaded directory;
-6. baseline and SkillOpt runs differ only in the native `skills` list.
+The following still require a later real single-task integration run:
+
+1. Harbor uploads the generated directory to the effective environment
+   `skills_dir` rather than a conflicting task override;
+2. Terminus-2 lists the generated frontmatter and the target model reads the
+   referenced `SKILL.md`;
+3. blank packaging reaches the created job/trial as exactly
+   `agents[].skills: []`;
+4. Harbor's emitted job-lock skill digest matches the uploaded directory.
+
+The resolved config and dry-run contract are recorded in
+`docs/terminalbench/HARBOR_RUNTIME.md`.

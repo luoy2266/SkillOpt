@@ -388,6 +388,35 @@ Static inspection of the pinned local Harbor `0.20.0` distribution confirmed:
 The exact packaging metadata, artifact digest, integrity policy, and remaining
 runtime checks are recorded in `docs/terminalbench/SKILL_PACKAGING.md`.
 
+### Phase 3 Harbor 0.20.0 runtime-config audit
+
+Static inspection and public CLI parsing against the pinned local Harbor
+`0.20.0` distribution confirmed:
+
+- the documented launch boundary is `harbor run --config <yaml-or-json>`, an
+  alias for `harbor job start`;
+- `harbor run --config <path> --print-config` validates with `JobConfig` and
+  returns before `Job.create()`, so it starts no job or Docker environment;
+- the real output identity fields are `job_name` and `jobs_dir`, producing
+  `<jobs_dir>/<job_name>/`; there is no `result_name` or generic `output_dir`
+  field in `JobConfig`;
+- repeat and concurrency are `n_attempts` and `n_concurrent_trials`;
+- dataset task selection is `datasets[].task_names`, a list of `fnmatch`
+  patterns applied to Harbor task names; Terminal-Bench exact IDs therefore
+  require clearing `exclude_task_names` and `n_tasks` in the resolved overlay;
+- the Docker runtime is `environment.type: docker`, or Harbor's same Docker
+  default when both environment type and import path are absent;
+- a future job writes job-level `config.json`, `lock.json`, `result.json`, and
+  `job.log`, plus per-trial directories containing singular `result.json`;
+- Terminus-2 declares ATIF support and writes its primary trajectory under the
+  trial's `agent/trajectory.json`.
+
+The migration therefore uses a validated base config plus a minimal overlay,
+and selects Harbor's public CLI rather than importing its async/internal job
+API into SkillOpt. Phase 3 invokes only `--version` and `--print-config`; real
+execution remains disabled. Full details, parity rules, and artifact layout are
+recorded in `docs/terminalbench/HARBOR_RUNTIME.md`.
+
 ## Registration and CLI contract
 
 There is no global benchmark registry in `skillopt/envs/__init__.py`.
@@ -481,10 +510,11 @@ continues to use SkillOpt's normal model/config route.
    direct `run_target_exec()` route, workspace skill installation, or prompt
    instruction would bypass the required Harbor/Terminus-2 path and violate
    the migration constraints.
-10. **Harbor result/ATIF paths are still external protocol assumptions.** Phase
-    2 verified the native skill directory/frontmatter/digest contract against
-    Harbor `0.20.0`, but result and ATIF schemas remain Phase 3+ integration
-    checks rather than assumptions to guess.
+10. **Harbor result/ATIF paths must follow current code, not stale labels.**
+    Phase 3 static audit established `<jobs_dir>/<job_name>/`, singular
+    `result.json` at both job and trial level, and Terminus-2's primary
+    `agent/trajectory.json`. Their actual contents and presence for the real
+    Terminal-Bench v2.1 baseline remain later single-job integration checks.
 
 ## Phase 0 conclusion
 
