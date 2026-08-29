@@ -23,3 +23,11 @@ Before making changes, read:
 - Run relevant tests after each phase.
 - Do not start full-scale training/evaluation from this development repository.
 - Do not commit automatically unless explicitly requested.
+
+## Implementation style
+
+- Keep migration code minimal and reviewable.
+- Prefer existing SkillOpt/Harbor abstractions over new framework layers.
+- Do not generalize for hypothetical future benchmarks, Harbor versions, or agents.
+- Avoid factories, registries, wrappers, and dataclasses unless they solve a concrete current requirement.
+- Minimize diff size while preserving correctness and tests.
