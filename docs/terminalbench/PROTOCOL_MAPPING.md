@@ -344,7 +344,7 @@ patches.
 ## Skill mapping and baseline semantics
 
 SkillOpt exposes one `skill_content: str`; Harbor expects a list of skill
-directories. The future adapter boundary must be:
+directories. The packaging boundary is:
 
 ```text
 not skill_content.strip() → agents[].skills = []
@@ -364,13 +364,29 @@ empty Markdown file so `S_0` maps to Harbor `skills=[]`.
 The pinned trainer has an edge case for `skill_init: ""`: `os.path.abspath("")`
 resolves to the current directory, which exists, and the trainer then attempts
 to open that directory. Therefore the config must not use an empty path;
-`skillopt/envs/terminalbench/skills/initial.md` should exist and have an empty
-body when it is added in a later phase.
+`skillopt/envs/terminalbench/skills/initial.md` now exists with a whitespace-only
+body and packages to Harbor `skills=[]`.
 
 `eval_only.py` does not read `env.skill_init`. It requires an explicit
 `--skill <path>` and reads that file. Baseline evaluation will therefore also
 need a real empty Markdown file; best-skill evaluation will pass
 `best_skill.md`.
+
+### Phase 2 Harbor 0.20.0 skill audit
+
+Static inspection of the pinned local Harbor `0.20.0` distribution confirmed:
+
+- `agents[].skills` is a list of string/path values;
+- a local value points to a skill directory containing `SKILL.md`, or to a
+  parent whose immediate child directories each contain `SKILL.md`;
+- Harbor resolves and uploads directories, not direct `SKILL.md` paths;
+- Harbor records its own directory-level skill digest in the job lock;
+- Terminus-2 discovers `<skills_dir>/*/SKILL.md` and requires YAML frontmatter
+  containing `name` and `description` before advertising a skill;
+- the generated skill body is not concatenated into SkillOpt's system prompt.
+
+The exact packaging metadata, artifact digest, integrity policy, and remaining
+runtime checks are recorded in `docs/terminalbench/SKILL_PACKAGING.md`.
 
 ## Registration and CLI contract
 
@@ -465,9 +481,10 @@ continues to use SkillOpt's normal model/config route.
    direct `run_target_exec()` route, workspace skill installation, or prompt
    instruction would bypass the required Harbor/Terminus-2 path and violate
    the migration constraints.
-10. **Harbor result/ATIF paths are still external protocol assumptions.** The
-    SkillOpt side of the mapping is confirmed here; the exact Harbor `0.20.0`
-    schema must be verified before Phase 2/3 implementation rather than guessed.
+10. **Harbor result/ATIF paths are still external protocol assumptions.** Phase
+    2 verified the native skill directory/frontmatter/digest contract against
+    Harbor `0.20.0`, but result and ATIF schemas remain Phase 3+ integration
+    checks rather than assumptions to guess.
 
 ## Phase 0 conclusion
 
