@@ -215,31 +215,26 @@ Minimum fields needed by the current pipeline are:
 }
 ```
 
-Recommended Terminal-Bench result shape for later phases:
+Phase 4 Terminal-Bench result shape:
 
 ```python
 {
     "id": task_id,
-    "hard": verifier_reward,
+    "raw_reward": float(verifier_reward),
+    "hard": 1.0 if verifier_reward == 1.0 else 0.0,
     "soft": float(verifier_reward),
-    "task_type": "terminalbench",
-    "task_description": task_instruction,
-    "n_turns": trajectory_turn_count,
-    "fail_reason": model_or_trial_failure_summary,
-    "trial_status": harbor_trial_status,
+    "trial_status": derived_trial_status,
     "harbor_result_path": harbor_result_path,
-    "harbor_trajectory_path": atif_path,
-    "infrastructure_valid": infrastructure_valid,
 }
 ```
 
-The common `RolloutResult` dataclass accepts fractional `hard` values and has
-named optional fields plus `extras`. `RolloutResult.from_dict()` moves unknown
-keys into `extras`, and `to_dict()` merges them back. That conversion is a
-utility only at the pinned commit: the trainer and built-in rollouts continue
-to pass dictionaries directly. Extra Terminal-Bench metadata will therefore
-remain ordinary dict keys unless later code explicitly constructs a
-`RolloutResult`.
+The common `RolloutResult` dataclass accepts fractional `hard` values, but the
+Terminal-Bench mapping intentionally keeps `hard` binary. It has named optional
+fields plus `extras`. `RolloutResult.from_dict()` moves unknown keys into
+`extras`, and `to_dict()` merges them back. That conversion is a utility only
+at the pinned commit: the trainer and built-in rollouts continue to pass
+dictionaries directly. Extra Terminal-Bench metadata will therefore remain
+ordinary dict keys unless later code explicitly constructs a `RolloutResult`.
 
 No current layer validates score bounds. `compute_score()` converts `hard` and
 `soft` to floats and returns their arithmetic means.
@@ -249,27 +244,36 @@ No current layer validates score bounds. `compute_score()` converts `hard` and
 The migration must use Terminal-Bench's verifier reward and must not add a
 text-based scorer.
 
-The planned mapping `hard = reward`, `soft = float(reward)` is technically
-accepted because both scoring and `RolloutResult` support fractional values.
-However, reflection currently classifies outcomes as:
+The original direct mapping `hard = reward` is superseded. Reflection currently
+classifies outcomes as:
 
 ```python
 failure = not hard or float(hard) < 1e-9
 success = bool(hard)
 ```
 
-Therefore any positive fractional reward is treated as a successful
-trajectory for reflection. If the pinned Terminal-Bench verifier is binary,
-the planned mapping is direct. If it can emit partial credit, later work must
-document the intended hard success boundary without changing the verifier.
+Therefore any positive fractional `hard` value would be treated as a successful
+trajectory. The frozen Terminal-Bench mapping is instead:
 
-The trainer also does not inspect `infrastructure_valid`. Merely adding that
-extra field will not exclude a broken trial from averages or reflection. A
-later runner/parser must not silently manufacture `hard=0` for missing or
-invalid verifier output. Infrastructure failures need an explicit run policy,
-such as raising the rollout batch as failed before returning model-scored
-results. A legitimate verifier reward of zero remains a model/task failure,
-not an infrastructure failure.
+```python
+raw_reward = float(verifier_reward)
+soft = raw_reward
+hard = 1.0 if raw_reward == 1.0 else 0.0
+```
+
+The reward must be a finite numeric value in `[0, 1]`. This preserves partial
+credit in `soft` while only complete verifier success enters reflection as a
+successful rollout. Harbor 0.20.0's Terminal-Bench mapper currently emits a
+strict binary `reward` value, but the parser retains the safe partial-credit
+mapping.
+
+The trainer also does not inspect `infrastructure_valid`. Phase 4 therefore
+fails closed before returning a scored result: missing or corrupt artifacts,
+missing or invalid verifier output, cancelled/incomplete trials, and explicit
+infrastructure exceptions raise `InfrastructureInvalidTrialError`. A legitimate
+verifier reward of zero remains a model/task failure, not an infrastructure
+failure. `AgentTimeoutError` and agent nonzero exit are scored only when Harbor
+still completed the verifier and persisted a trustworthy reward.
 
 The validation gate consumes aggregate `hard` and `soft` means and can compare
 `hard`, `soft`, or a configured weighted `mixed` score. No Terminal-Bench
@@ -417,6 +421,21 @@ API into SkillOpt. Phase 3 invokes only `--version` and `--print-config`; real
 execution remains disabled. Full details, parity rules, and artifact layout are
 recorded in `docs/terminalbench/HARBOR_RUNTIME.md`.
 
+### Phase 4 Harbor 0.20.0 result audit
+
+Wheel-matching Harbor source inspection confirmed that each trial's verifier
+reward is `verifier_result.rewards["reward"]`. `TrialResult` has no explicit
+status field; completion and failure classification use `finished_at`, verifier
+timing/result, and `exception_info`. Job-level `result.json` contains aggregate
+stats but is written without its modeled `trial_results` list, so it is not the
+source of individual rollout rewards.
+
+Harbor's Terminal-Bench mapper writes binary `0` or `1` to `reward.txt` from
+the released test command's exit code. `AgentTimeoutError` and agent nonzero
+exit are recorded while still allowing verifier execution; all other recorded
+exceptions fail closed in Phase 4. The exact persisted schema, reward mapping,
+and parser boundary are recorded in `docs/terminalbench/RESULT_CONTRACT.md`.
+
 ## Registration and CLI contract
 
 There is no global benchmark registry in `skillopt/envs/__init__.py`.
@@ -494,11 +513,12 @@ continues to use SkillOpt's normal model/config route.
 3. **The trajectory schema is broader than role/content.** Native tool-call
    and environment-step records are already accepted, so ATIF should preserve
    structure instead of flattening everything preemptively.
-4. **Continuous `hard` values affect reflection categorization.** A positive
-   fractional reward is a reflection success under the current truthiness
-   test, even though score averaging supports fractional hard reward.
-5. **`infrastructure_valid` is metadata only.** The current trainer will not
-   filter or specially handle infrastructure failures.
+4. **Terminal-Bench `hard` must remain binary.** Positive partial verifier
+   reward is retained in `soft`, while `hard` is `1.0` only for exact complete
+   reward `1.0`, avoiding false reflection success.
+5. **Infrastructure validity cannot be metadata only.** The current trainer
+   will not filter broken trials, so the result parser raises before returning
+   a scored result when verifier validity is not trustworthy.
 6. **Blank baseline requires an empty file and adapter translation.** The
    trainer baseline is `S_0`; it does not natively know Harbor `skills=[]`.
 7. **`eval_only.py` requires `--skill`.** The migration plan's abbreviated
@@ -513,8 +533,9 @@ continues to use SkillOpt's normal model/config route.
 10. **Harbor result/ATIF paths must follow current code, not stale labels.**
     Phase 3 static audit established `<jobs_dir>/<job_name>/`, singular
     `result.json` at both job and trial level, and Terminus-2's primary
-    `agent/trajectory.json`. Their actual contents and presence for the real
-    Terminal-Bench v2.1 baseline remain later single-job integration checks.
+    `agent/trajectory.json`. Phase 4 established the static result schema; the
+    artifacts' actual presence for the real Terminal-Bench v2.1 baseline
+    remains a later single-job integration check.
 
 ## Phase 0 conclusion
 
