@@ -322,15 +322,26 @@ more than ordinary role/content chat messages:
 
 Any other dictionary is rendered through its `content` field, with a default
 display role of `agent`. A `role: "system"` record is rendered as
-post-execution verification information, which is suitable for a verifier
-summary but should not be used to simulate Harbor skill injection.
+post-execution verification information. It is still an explicitly supported
+record shape. Phase 5 preserves a real ATIF `source: "system"` using this role
+rather than disguising the event as assistant speech; it does not use such
+records to simulate Harbor skill injection.
 
 This means ATIF conversion does not need to collapse all terminal activity
 into one role/content string. Commands and observations can be mapped to the
 supported tool-call or step records while preserving order. The converter
 should retain the task instruction, assistant messages/reasoning when
-available, terminal commands, outputs, observations, final response, and a
-verifier summary.
+available, terminal commands, outputs, observations, and final response.
+Verifier output is not part of Terminus-2 ATIF and remains Phase 4/6 result
+data, not Phase 5 trajectory input.
+
+Terminus-2 agent episodes naturally map to the environment-step record:
+`reasoning_content` becomes `reasoning`, ordered tool calls become `action`,
+and observation results become `env_feedback`. Multiple terminal commands
+remain grouped because Terminus-2 records one shared observation for a command
+batch. ATIF system/context-management messages retain `role: "system"`.
+Pinned reflection displays them with its existing `[verification]` label, but
+their source provenance is not rewritten.
 
 Optional reflection context can also come from result fields or sibling files:
 
@@ -435,6 +446,24 @@ the released test command's exit code. `AgentTimeoutError` and agent nonzero
 exit are recorded while still allowing verifier execution; all other recorded
 exceptions fail closed in Phase 4. The exact persisted schema, reward mapping,
 and parser boundary are recorded in `docs/terminalbench/RESULT_CONTRACT.md`.
+
+### Phase 5 Harbor / Terminus-2 ATIF audit
+
+Pinned source inspection confirmed that Terminus-2 `2.0.0` emits ATIF-v1.7
+with a top-level `steps` list, not a `messages` list. The first user step holds
+the rendered task prompt. Normal agent steps hold message/reasoning, synthetic
+`bash_command` and `mark_task_complete` tool calls, and observation results.
+Timestamps and token/cost metrics are present but reflection does not consume
+them. There is no ATIF status, exception, reward, verifier result, or dedicated
+final-response field.
+
+The ATIF `session_id` is not a canonical Terminal-Bench task id. Phase 5
+therefore validates `expected_task_id` only against the required output path;
+Phase 6 must bind the result, trajectory, and expected id from one trial
+directory. Explicit `continued_trajectory_ref` chains are followed without
+job/trial scanning, while copied continuation context is skipped. Full schema,
+mapping, integrity, and timeout details are recorded in
+`docs/terminalbench/TRAJECTORY_CONTRACT.md`.
 
 ## Registration and CLI contract
 
