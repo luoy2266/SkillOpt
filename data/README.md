@@ -37,6 +37,16 @@ Each `items.json` contains only stable IDs or source-path hints.
 
 Counts are ordered as train / val / test.
 
+## Pending Terminal-Bench Split
+
+This repository does not currently contain an authoritative Terminal-Bench
+v2.1 89-task ID source, so it does not release or invent a formal task-ID
+manifest for that benchmark. Use the real pinned Terminal-Bench task source
+with `scripts/materialize_terminalbench_split.py` to create
+`data/terminalbench_split/`. See
+`docs/terminalbench/SPLIT_MANIFEST.md` for the source formats, manifest schema,
+checksums, and deterministic `1:1:8` allocation rule.
+
 ## Direct Use
 
 Only `alfworld_path_split/` can be used directly as `--split_dir` from this
