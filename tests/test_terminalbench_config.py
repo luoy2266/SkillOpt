@@ -13,6 +13,7 @@ from unittest.mock import patch
 import yaml
 
 from scripts.materialize_terminalbench_split import materialize_terminalbench_split
+from scripts.preflight_terminalbench import _redact_config
 from skillopt.config import flatten_config, load_config
 from skillopt.envs.terminalbench.adapter import TerminalBenchAdapter
 
@@ -23,6 +24,7 @@ class TerminalBenchConfigTests(unittest.TestCase):
         cls.repository_root = Path(__file__).resolve().parents[1]
         cls.default_config = cls.repository_root / "configs/terminalbench/default.yaml"
         cls.smoke_config = cls.repository_root / "configs/terminalbench/smoke.yaml"
+        cls.formal_config = cls.repository_root / "configs/terminalbench/formal.yaml"
         cls.initial_skill = (
             cls.repository_root
             / "skillopt/envs/terminalbench/skills/initial.md"
@@ -182,7 +184,11 @@ class TerminalBenchConfigTests(unittest.TestCase):
         self.assertEqual(items, adapter.dataloader.val_items)
 
     def test_repository_configs_have_no_machine_paths_or_credentials(self) -> None:
-        for config_path in (self.default_config, self.smoke_config):
+        for config_path in (
+            self.default_config,
+            self.smoke_config,
+            self.formal_config,
+        ):
             with self.subTest(config=config_path.name):
                 raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
                 text = config_path.read_text(encoding="utf-8")
@@ -194,6 +200,100 @@ class TerminalBenchConfigTests(unittest.TestCase):
         flat = flatten_config(load_config(str(self.default_config)))
         self.assertFalse(Path(flat["split_dir"]).is_absolute())
         self.assertFalse(Path(flat["harbor_base_config"]).is_absolute())
+
+    def test_formal_config_freezes_full_split_training_contract(self) -> None:
+        flat = flatten_config(load_config(str(self.formal_config)))
+
+        self.assertEqual(flat["num_epochs"], 4)
+        self.assertEqual(flat["train_size"], 0)
+        self.assertEqual(flat["batch_size"], 40)
+        self.assertEqual(flat["accumulation"], 1)
+        self.assertEqual(flat["minibatch_size"], 8)
+        self.assertEqual(flat["analyst_workers"], 16)
+        self.assertFalse(flat["failure_only"])
+        self.assertEqual(flat["edit_budget"], 4)
+        self.assertEqual(flat["sel_env_num"], 0)
+        self.assertTrue(flat["use_slow_update"])
+        self.assertTrue(flat["use_meta_skill"])
+        self.assertEqual(flat["seed"], 42)
+        self.assertEqual(flat["limit"], 0)
+        self.assertEqual(flat["n_concurrent_trials"], 1)
+        self.assertFalse(flat["eval_test"])
+        self.assertEqual(flat["optimizer_backend"], "openai_compatible")
+        self.assertEqual(flat["optimizer_model"], "deepseek-v4-flash")
+        self.assertEqual(flat["reasoning_effort"], "max")
+        self.assertEqual(flat["optimizer_openai_compatible_completion_cap"], 16384)
+
+    def test_formal_manifest_schema_is_secret_free_json(self) -> None:
+        schema_path = (
+            self.repository_root
+            / "configs/terminalbench/experiment_manifest.schema.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        text = schema_path.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            schema["properties"]["schema_version"]["const"],
+            "skillopt-terminalbench-formal-v1",
+        )
+        self.assertEqual(
+            schema["properties"]["models"]["properties"]["optimizer"]
+            ["properties"]["completion_cap"]["const"],
+            16384,
+        )
+        self.assertIn("cache", schema["required"])
+        self.assertEqual(
+            schema["properties"]["cache"]["properties"]["container_root"]["const"],
+            "/opt/skillopt-cache/terminal-bench-v2.1",
+        )
+        dataset_required = schema["properties"]["dataset"]["required"]
+        execution_required = schema["properties"]["execution"]["required"]
+        self.assertIn("split_manifest", dataset_required)
+        self.assertIn("source_config_text", execution_required)
+        self.assertIn("harbor_base_config_text", execution_required)
+        self.assertIn("timeouts", execution_required)
+        self.assertIn("docker", execution_required)
+        self.assertEqual(
+            schema["properties"]["execution"]["properties"]["timeouts"]
+            ["properties"]["target_max_turns"]["const"],
+            250,
+        )
+        docker_required = (
+            schema["properties"]["execution"]["properties"]["docker"]["required"]
+        )
+        self.assertIn("docker_default_address_pools_configured", docker_required)
+        self.assertNotIn("DEEPSEEK_API_KEY=", text)
+        self.assertNotIn("Authorization:", text)
+
+    def test_formal_wrapper_derives_optimizer_credential_process_locally(self) -> None:
+        wrapper = (
+            self.repository_root / "scripts/run_terminalbench_formal_stage.sh"
+        ).read_text(encoding="utf-8")
+        systemd_probe = (
+            self.repository_root / "scripts/probe_terminalbench_formal_systemd.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'export OPTIMIZER_OPENAI_COMPATIBLE_API_KEY="$DEEPSEEK_API_KEY"',
+            wrapper,
+        )
+        self.assertIn('export http_proxy="$HTTP_PROXY"', wrapper)
+        self.assertIn('export no_proxy="$NO_PROXY"', wrapper)
+        self.assertIn("/usr/bin/sg docker -c", systemd_probe)
+        self.assertIn("EnvironmentFile=", systemd_probe)
+
+    def test_formal_manifest_redaction_preserves_nonsecret_token_limits(self) -> None:
+        redacted = _redact_config(
+            {
+                "optimizer_openai_compatible_completion_cap": 16384,
+                "rewrite_max_completion_tokens": 64000,
+                "optimizer_azure_openai_api_key": "sk-test-secret",
+            }
+        )
+
+        self.assertEqual(redacted["optimizer_openai_compatible_completion_cap"], 16384)
+        self.assertEqual(redacted["rewrite_max_completion_tokens"], 64000)
+        self.assertEqual(redacted["optimizer_azure_openai_api_key"], "<redacted>")
 
     def _assert_no_credentials(self, value, path: str = "config") -> None:
         if isinstance(value, dict):

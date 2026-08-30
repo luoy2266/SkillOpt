@@ -1,0 +1,14 @@
+asset_id	classification	relative_path	sha256	tasks	source
+hf-distilbert-sst2	required-cache	huggingface/hub/models--distilbert-base-uncased-finetuned-sst-2-english	REPLACE_WITH_CANONICAL_TREE_SHA256	hf-model-inference	huggingface:distilbert-base-uncased-finetuned-sst-2-english
+hf-qwen2.5-1.5b-instruct	required-cache	huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct	REPLACE_WITH_CANONICAL_TREE_SHA256	count-dataset-tokens	huggingface:Qwen/Qwen2.5-1.5B-Instruct
+hf-openthoughts-1k-sample-hub	required-cache	huggingface/hub/datasets--ryanmarten--OpenThoughts-1k-sample	REPLACE_WITH_CANONICAL_TREE_SHA256	count-dataset-tokens	huggingface:ryanmarten/OpenThoughts-1k-sample
+hf-openthoughts-1k-sample-prepared	required-cache	huggingface/datasets/REPLACE_WITH_PREPARED_DATASET_DIRECTORY	REPLACE_WITH_CANONICAL_TREE_SHA256	count-dataset-tokens	huggingface-datasets:ryanmarten/OpenThoughts-1k-sample:metadata
+hf-bge-small-zh-v1.5-rev-7999e1d3	required-cache	huggingface/hub/models--BAAI--bge-small-zh-v1.5	REPLACE_WITH_CANONICAL_TREE_SHA256	mteb-retrieve	huggingface:BAAI/bge-small-zh-v1.5@7999e1d3359715c523056ef9478215996d62a620
+caffe-cifar10	runtime-network-only	-	-	caffe-cifar-10	BVLC/caffe get_cifar10.sh
+povray-2.2-archives	runtime-network-only	-	-	build-pov-ray	https://www.povray.org/ftp/pub/povray/Old-Versions/Official-2.2/
+qemu-5.2.0-source	runtime-network-only	-	-	install-windows-3.11	https://download.qemu.org/qemu-5.2.0.tar.xz
+mteb-results-repository	runtime-network-only	-	-	mteb-leaderboard	https://github.com/embeddings-benchmark/results@c0fd3271442f8c0c839084a109fede85c8514dab
+alpine-3.19-extended-iso	image-build-only	-	-	qemu-startup,qemu-alpine-ssh	https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-extended-3.19.0-x86_64.iso
+oewn-sqlite	image-build-only	-	-	query-optimize	huggingface:pimpalgaonkar/terminalbench-sqlite-db@84e42d43436afd2c21b4d3f94c05383fd3a6f78e/oewn.sqlite
+allenai-c4-shard	image-build-only	-	-	reshard-c4-data	huggingface:allenai/c4/en/c4-train.00000-of-01024.json.gz
+yelp-review-full-parquet	image-build-only	-	-	train-fasttext	huggingface:Yelp/yelp_review_full

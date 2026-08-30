@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skillopt.local/schemas/terminalbench-experiment-manifest-v1.json",
+  "title": "SkillOpt Terminal-Bench v2.1 experiment manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "condition",
+    "created_at",
+    "versions",
+    "dataset",
+    "models",
+    "cache",
+    "execution",
+    "skill",
+    "artifacts",
+    "environment_variable_names"
+  ],
+  "properties": {
+    "schema_version": {"const": "skillopt-terminalbench-formal-v1"},
+    "experiment_id": {"type": "string", "minLength": 1},
+    "condition": {
+      "enum": ["training", "baseline-test", "skill-test"]
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skillopt_branch",
+        "skillopt_head",
+        "terminalbench_head",
+        "harbor",
+        "terminus_2",
+        "docker_engine",
+        "python",
+        "openai_sdk"
+      ],
+      "properties": {
+        "skillopt_branch": {"type": "string"},
+        "skillopt_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "terminalbench_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "harbor": {"type": "string"},
+        "terminus_2": {"type": "string"},
+        "docker_engine": {"type": "string"},
+        "python": {"type": "string"},
+        "openai_sdk": {"type": "string"}
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkout",
+        "tasks_path",
+        "split_dir",
+        "split_manifest_sha256",
+        "split_manifest",
+        "counts",
+        "task_ids"
+      ],
+      "properties": {
+        "checkout": {"type": "string"},
+        "tasks_path": {"type": "string"},
+        "split_dir": {"type": "string"},
+        "split_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "split_manifest": {"type": "object"},
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["train", "val", "test", "unique"],
+          "properties": {
+            "train": {"const": 9},
+            "val": {"const": 9},
+            "test": {"const": 71},
+            "unique": {"const": 89}
+          }
+        },
+        "task_ids": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["train", "val", "test"],
+          "properties": {
+            "train": {"type": "array", "items": {"type": "string"}},
+            "val": {"type": "array", "items": {"type": "string"}},
+            "test": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["underlying_identity", "target", "optimizer"],
+      "properties": {
+        "underlying_identity": {"const": "DeepSeek-V4-Flash-0731"},
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_model", "reasoning_effort", "transport"],
+          "properties": {
+            "request_model": {"const": "deepseek/deepseek-v4-flash"},
+            "reasoning_effort": {"const": "max"},
+            "transport": {"const": "Harbor -> Terminus-2 -> LiteLLM"}
+          }
+        },
+        "optimizer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backend",
+            "request_model",
+            "reasoning_effort",
+            "completion_cap",
+            "endpoint"
+          ],
+          "properties": {
+            "backend": {"const": "openai_compatible"},
+            "request_model": {"const": "deepseek-v4-flash"},
+            "reasoning_effort": {"const": "max"},
+            "completion_cap": {"const": 16384},
+            "endpoint": {"const": "https://api.deepseek.com"}
+          }
+        }
+      }
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "container_root",
+        "manifest_path",
+        "manifest_sha256",
+        "assets"
+      ],
+      "properties": {
+        "root": {"type": "string"},
+        "container_root": {
+          "const": "/opt/skillopt-cache/terminal-bench-v2.1"
+        },
+        "manifest_path": {"type": "string"},
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "asset_id",
+              "classification",
+              "relative_path",
+              "sha256",
+              "tasks",
+              "source"
+            ],
+            "properties": {
+              "asset_id": {"type": "string"},
+              "classification": {
+                "enum": [
+                  "required-cache",
+                  "runtime-network-only",
+                  "image-build-only"
+                ]
+              },
+              "relative_path": {"type": "string"},
+              "sha256": {"type": "string"},
+              "tasks": {"type": "string"},
+              "source": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "config_path",
+        "config_sha256",
+        "source_config_text",
+        "resolved_config",
+        "cli_overrides",
+        "harbor_base_config_path",
+        "harbor_base_config_sha256",
+        "harbor_base_config_text",
+        "n_attempts",
+        "n_concurrent_trials",
+        "harbor_max_retries",
+        "timeouts",
+        "docker"
+      ],
+      "properties": {
+        "config_path": {"type": "string"},
+        "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_config_text": {"type": "string"},
+        "resolved_config": {"type": "object"},
+        "cli_overrides": {"type": "array", "items": {"type": "string"}},
+        "harbor_base_config_path": {"type": "string"},
+        "harbor_base_config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "harbor_base_config_text": {"type": "string"},
+        "n_attempts": {"const": 1},
+        "n_concurrent_trials": {"const": 1},
+        "harbor_max_retries": {"const": 0},
+        "timeouts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "target_max_turns",
+            "agent_seconds_by_task",
+            "verifier_seconds_by_task",
+            "build_seconds_by_task"
+          ],
+          "properties": {
+            "source": {"const": "Terminal-Bench task.toml"},
+            "target_max_turns": {"const": 250},
+            "agent_seconds_by_task": {
+              "type": "object",
+              "additionalProperties": {"type": "number", "exclusiveMinimum": 0}
+            },
+            "verifier_seconds_by_task": {
+              "type": "object",
+              "additionalProperties": {"type": "number", "exclusiveMinimum": 0}
+            },
+            "build_seconds_by_task": {
+              "type": "object",
+              "additionalProperties": {"type": "number", "exclusiveMinimum": 0}
+            }
+          }
+        },
+        "docker": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine",
+            "network_subnets",
+            "network_gateways",
+            "free_bytes",
+            "minimum_declared_bytes",
+            "default_address_pools_configured",
+            "docker_default_address_pools_configured"
+          ],
+          "properties": {
+            "engine": {"type": "string"},
+            "network_subnets": {
+              "type": "array",
+              "items": {"type": "string"},
+              "uniqueItems": true
+            },
+            "network_gateways": {
+              "type": "array",
+              "items": {"type": "string"},
+              "uniqueItems": true
+            },
+            "free_bytes": {"type": "integer", "minimum": 0},
+            "minimum_declared_bytes": {"type": "integer", "minimum": 0},
+            "default_address_pools_configured": {"type": "boolean"},
+            "docker_default_address_pools_configured": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256",
+        "native_skill_sha256",
+        "is_blank",
+        "training_step",
+        "selection_score",
+        "origin"
+      ],
+      "properties": {
+        "path": {"type": "string"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "native_skill_sha256": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        },
+        "is_blank": {"type": "boolean"},
+        "training_step": {"type": ["integer", "null"], "minimum": 0},
+        "selection_score": {"type": ["number", "null"]},
+        "origin": {"type": ["string", "null"]}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_root", "log_path", "manifest_path"],
+      "properties": {
+        "output_root": {"type": "string"},
+        "log_path": {"type": "string"},
+        "manifest_path": {"type": "string"}
+      }
+    },
+    "environment_variable_names": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "accounting": {
+      "type": "object",
+      "description": "Post-run target/optimizer/job accounting; values are added without secrets.",
+      "additionalProperties": true
+    }
+  }
+}
