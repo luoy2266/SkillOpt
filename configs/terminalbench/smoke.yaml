@@ -1,0 +1,27 @@
+_base_: default.yaml
+
+# Phase 9 should use this config with eval_only.py and one explicit split.
+# limit=1 truncates the selected materialized split without hard-coding a task.
+train:
+  num_epochs: 1
+  train_size: 0
+  batch_size: 1
+  accumulation: 1
+
+gradient:
+  minibatch_size: 1
+  merge_batch_size: 2
+  analyst_workers: 1
+
+optimizer:
+  use_slow_update: false
+  use_meta_skill: false
+
+evaluation:
+  sel_env_num: 1
+  test_env_num: 1
+  eval_test: false
+
+env:
+  n_concurrent_trials: 1
+  limit: 1
