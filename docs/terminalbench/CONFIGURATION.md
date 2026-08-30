@@ -62,6 +62,7 @@ backend. Keep its API request identifier separate from experiment provenance:
 Optimizer API request model:          deepseek-v4-flash
 Underlying experiment/model identity: DeepSeek-V4-Flash-0731
 Optimizer reasoning effort:           max
+Optimizer completion-token cap:       16384
 ```
 
 The request model is passed directly to the OpenAI-compatible Chat Completions
@@ -99,6 +100,22 @@ TerminalBenchAdapter -> Harbor -> Terminus-2 -> DeepSeek-V4-Flash-0731
 ```
 
 No Harbor target-model backend is registered in SkillOpt.
+
+The reflection analyst requests up to 16,384 completion tokens. Terminal-Bench
+sets `model.optimizer_openai_compatible_completion_cap: 16384`, so the generic
+OpenAI-compatible backend resolves:
+
+```text
+caller requested completion tokens:  16384
+optimizer configured maximum:         16384
+effective request maximum:            min(16384, 16384) = 16384
+```
+
+This removes the previous internal mismatch where the analyst requested
+16,384 tokens but the backend's unset default capped the request at 8,000.
+The generic `min(caller requested, configured maximum)` safety rule remains
+unchanged. A 16,384-token cap does not guarantee a usable patch or guarantee
+that every response will avoid truncation.
 
 ## Optimizer reflection diagnostics
 

@@ -67,6 +67,7 @@ from skillopt.model import (
     configure_copilot_exec,
     configure_cursor_exec,
     configure_minimax_chat,
+    configure_openai_compatible,
     configure_qwen_chat,
     get_qwen_thinking_modes,
     get_token_summary,
@@ -820,6 +821,11 @@ class ReflACTTrainer:
             target_max_tokens=cfg.get("target_qwen_chat_max_tokens"),
             target_enable_thinking=cfg.get("target_qwen_chat_enable_thinking"),
             target_thinking_mode=cfg.get("target_qwen_chat_thinking_mode"),
+        )
+        configure_openai_compatible(
+            optimizer_max_tokens=cfg.get(
+                "optimizer_openai_compatible_completion_cap"
+            ),
         )
         configure_minimax_chat(
             region=cfg.get("minimax_region") or None,

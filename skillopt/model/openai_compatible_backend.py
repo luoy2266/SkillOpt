@@ -515,6 +515,7 @@ def configure_openai_compatible(
     optimizer_base_url: str | None = None,
     optimizer_api_key: str | None = None,
     optimizer_model: str | None = None,
+    optimizer_max_tokens: int | str | None = None,
     target_base_url: str | None = None,
     target_api_key: str | None = None,
     target_model: str | None = None,
@@ -545,7 +546,11 @@ def configure_openai_compatible(
             deployment=optimizer_model if optimizer_model is not None else model,
             temperature=temperature,
             timeout_seconds=timeout_seconds,
-            max_tokens=max_tokens,
+            max_tokens=(
+                optimizer_max_tokens
+                if optimizer_max_tokens is not None
+                else max_tokens
+            ),
         )
         _update_config(
             TARGET_CONFIG,

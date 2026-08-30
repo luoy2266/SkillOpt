@@ -48,11 +48,15 @@ model.configure_openai_compatible(
     base_url="https://api.deepseek.com/v1",
     api_key="sk-...",
     model="deepseek-chat",
+    optimizer_max_tokens=16384,
 )
 ```
 
 `configure_openai_compatible()` also accepts `optimizer_*` and `target_*`
-arguments when the two roles use different endpoints or models.
+arguments when the two roles use different endpoints or models. The optional
+`optimizer_max_tokens` value overrides the shared `max_tokens` cap for optimizer
+requests only; each call still sends the smaller of its requested completion
+limit and the configured backend cap.
 
 ### Environment variables
 

@@ -132,6 +132,7 @@ class TerminalBenchConfigTests(unittest.TestCase):
         self.assertEqual(flat["env"], "terminalbench")
         self.assertEqual(flat["optimizer_backend"], "openai_compatible")
         self.assertEqual(flat["optimizer_model"], "deepseek-v4-flash")
+        self.assertEqual(flat["optimizer_openai_compatible_completion_cap"], 16384)
         self.assertEqual(flat["reasoning_effort"], "max")
         self.assertNotEqual(flat["optimizer_model"], "DeepSeek-V4-Flash-0731")
         self.assertEqual(

@@ -47,6 +47,7 @@ _FLATTEN_MAP: dict[str, str] = {
     "model.target": "target_model",
     "model.optimizer_backend": "optimizer_backend",
     "model.target_backend": "target_backend",
+    "model.optimizer_openai_compatible_completion_cap": "optimizer_openai_compatible_completion_cap",
     "model.reasoning_effort": "reasoning_effort",
     "model.rewrite_reasoning_effort": "rewrite_reasoning_effort",
     "model.rewrite_max_completion_tokens": "rewrite_max_completion_tokens",

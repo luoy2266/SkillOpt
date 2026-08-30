@@ -71,9 +71,11 @@ def test_configure_preserves_role_specific_values() -> None:
         base_url="https://shared.example/v1",
         api_key="shared-key",
         model="shared-model",
+        max_tokens=8000,
         optimizer_base_url="https://optimizer.example/v1",
         optimizer_api_key="optimizer-key",
         optimizer_model="optimizer-model",
+        optimizer_max_tokens=16384,
         target_base_url="https://target.example/v1",
         target_api_key="target-key",
         target_model="target-model",
@@ -82,9 +84,37 @@ def test_configure_preserves_role_specific_values() -> None:
     assert backend.OPTIMIZER_CONFIG.base_url == "https://optimizer.example/v1"
     assert backend.OPTIMIZER_CONFIG.api_key == "optimizer-key"
     assert backend.OPTIMIZER_CONFIG.deployment == "optimizer-model"
+    assert backend.OPTIMIZER_CONFIG.max_tokens == 16384
     assert backend.TARGET_CONFIG.base_url == "https://target.example/v1"
     assert backend.TARGET_CONFIG.api_key == "target-key"
     assert backend.TARGET_CONFIG.deployment == "target-model"
+    assert backend.TARGET_CONFIG.max_tokens == 8000
+
+
+def test_optimizer_max_tokens_respects_caller_and_configured_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _CompletionRecorder()
+    monkeypatch.setattr(backend, "_get_client", lambda role: _Client(calls))
+    model.set_optimizer_backend("openai_compatible")
+    model.configure_openai_compatible(optimizer_max_tokens=16384)
+
+    model.chat_optimizer(
+        "system",
+        "user",
+        max_completion_tokens=16384,
+        retries=1,
+    )
+    model.chat_optimizer(
+        "system",
+        "user",
+        max_completion_tokens=8000,
+        retries=1,
+    )
+
+    assert backend.OPTIMIZER_CONFIG.max_tokens == 16384
+    assert calls.calls[0]["max_tokens"] == 16384
+    assert calls.calls[1]["max_tokens"] == 8000
 
 
 def test_optimizer_and_target_route_to_their_own_clients(monkeypatch: pytest.MonkeyPatch) -> None:
