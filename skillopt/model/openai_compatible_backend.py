@@ -24,11 +24,16 @@ it can be selected as the optimizer and/or target backend and routed through
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from openai import OpenAI
 
@@ -36,6 +41,8 @@ from skillopt.model.common import (
     TokenTracker,
     compat_message_from_chat_message,
     default_model_for_backend,
+    emit_model_diagnostic,
+    model_diagnostics_enabled,
     usage_from_openai_usage,
 )
 
@@ -111,6 +118,52 @@ def _config_for(role: str) -> OpenAICompatibleConfig:
     return OPTIMIZER_CONFIG if role == "optimizer" else TARGET_CONFIG
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _endpoint_origin(base_url: str) -> str:
+    parsed = urlsplit(base_url)
+    if not parsed.scheme or not parsed.hostname:
+        return ""
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return f"{parsed.scheme}://{host}"
+
+
+def _request_chars(messages: list[dict[str, Any]]) -> int:
+    return len(
+        json.dumps(
+            messages,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+    )
+
+
+def _safe_optional_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _sanitize_error_message(error: Exception, api_key: str) -> str:
+    message = str(error)
+    if api_key:
+        message = message.replace(api_key, "[REDACTED]")
+    message = re.sub(
+        r"(?i)(authorization\s*[:=]\s*)([^\s,;]+)",
+        r"\1[REDACTED]",
+        message,
+    )
+    message = re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer [REDACTED]", message)
+    return message[:2000]
+
+
 def _build_client(config: OpenAICompatibleConfig) -> OpenAI:
     return OpenAI(
         base_url=config.base_url.rstrip("/") or _DEFAULT_BASE_URL,
@@ -180,16 +233,17 @@ def _chat_messages_impl(
 ) -> tuple[Any, dict[str, int]]:
     config = _config_for(role)
     client = _get_client(role)
+    effective_max_tokens = min(max_completion_tokens, config.max_tokens)
+    actual_effort = reasoning_effort or REASONING_EFFORT
     kwargs: dict[str, Any] = {
         "model": deployment or config.deployment,
         "messages": messages,
         # ``max_tokens`` (rather than ``max_completion_tokens``) is the field
         # understood by the broadest set of OpenAI-compatible providers.
-        "max_tokens": min(max_completion_tokens, config.max_tokens),
+        "max_tokens": effective_max_tokens,
     }
     if config.temperature is not None:
         kwargs["temperature"] = config.temperature
-    actual_effort = reasoning_effort or REASONING_EFFORT
     if actual_effort is not None:
         kwargs["reasoning_effort"] = actual_effort
     if tools:
@@ -199,8 +253,13 @@ def _chat_messages_impl(
     if timeout is not None:
         kwargs["timeout"] = timeout
 
+    diagnostics_enabled = model_diagnostics_enabled()
+    request_started_at = _utc_now()
+    request_started = time.monotonic()
+    diagnostic_attempts: list[dict[str, Any]] = []
     last_err: Exception | None = None
     for attempt in range(retries):
+        attempt_started = time.monotonic()
         try:
             resp = client.chat.completions.create(**kwargs)
             choices = getattr(resp, "choices", None) or []
@@ -208,7 +267,8 @@ def _chat_messages_impl(
                 raise RuntimeError(
                     f"OpenAI-compatible API returned no choices: {resp!r}"
                 )
-            message = choices[0].message
+            choice = choices[0]
+            message = choice.message
             text = message.content or ""
             usage_info = usage_from_openai_usage(getattr(resp, "usage", None))
             tracker.record(
@@ -216,12 +276,90 @@ def _chat_messages_impl(
                 usage_info["prompt_tokens"],
                 usage_info["completion_tokens"],
             )
+            if diagnostics_enabled:
+                diagnostic_attempts.append({
+                    "backend_attempt_index": attempt + 1,
+                    "outcome": "success",
+                    "latency_ms": round((time.monotonic() - attempt_started) * 1000, 3),
+                })
+                response_bytes = text.encode("utf-8")
+                emit_model_diagnostic({
+                    "stage": stage,
+                    "role": role,
+                    "backend": BACKEND_NAME,
+                    "model": kwargs["model"],
+                    "endpoint": _endpoint_origin(config.base_url),
+                    "reasoning_effort": actual_effort,
+                    "caller_requested_max_tokens": max_completion_tokens,
+                    "backend_configured_max_tokens": config.max_tokens,
+                    "effective_request_max_tokens": effective_max_tokens,
+                    "request_chars": _request_chars(messages),
+                    "start_timestamp": request_started_at,
+                    "finish_timestamp": _utc_now(),
+                    "latency_ms": round((time.monotonic() - request_started) * 1000, 3),
+                    "success": True,
+                    "usage": usage_info,
+                    "finish_reason": _safe_optional_value(
+                        getattr(choice, "finish_reason", None)
+                    ),
+                    "response_bytes": len(response_bytes),
+                    "response_sha256": hashlib.sha256(response_bytes).hexdigest(),
+                    "response_id": _safe_optional_value(getattr(resp, "id", None)),
+                    "provider_model": _safe_optional_value(getattr(resp, "model", None)),
+                    "backend_attempt_count": len(diagnostic_attempts),
+                    "backend_attempts": diagnostic_attempts,
+                    "sdk_transport_attempts": "unknown",
+                })
             if return_message:
                 return compat_message_from_chat_message(message), usage_info
             return text, usage_info
         except Exception as e:  # noqa: BLE001
             last_err = e
+            if diagnostics_enabled:
+                diagnostic_attempts.append({
+                    "backend_attempt_index": attempt + 1,
+                    "outcome": "error",
+                    "latency_ms": round((time.monotonic() - attempt_started) * 1000, 3),
+                    "error_type": type(e).__name__,
+                    "error_message": _sanitize_error_message(e, config.api_key),
+                })
             time.sleep(min(2 ** attempt, 30))
+    if diagnostics_enabled:
+        emit_model_diagnostic({
+            "stage": stage,
+            "role": role,
+            "backend": BACKEND_NAME,
+            "model": kwargs["model"],
+            "endpoint": _endpoint_origin(config.base_url),
+            "reasoning_effort": actual_effort,
+            "caller_requested_max_tokens": max_completion_tokens,
+            "backend_configured_max_tokens": config.max_tokens,
+            "effective_request_max_tokens": effective_max_tokens,
+            "request_chars": _request_chars(messages),
+            "start_timestamp": request_started_at,
+            "finish_timestamp": _utc_now(),
+            "latency_ms": round((time.monotonic() - request_started) * 1000, 3),
+            "success": False,
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+            "finish_reason": None,
+            "response_bytes": 0,
+            "response_sha256": None,
+            "response_id": None,
+            "provider_model": None,
+            "backend_attempt_count": len(diagnostic_attempts),
+            "backend_attempts": diagnostic_attempts,
+            "sdk_transport_attempts": "unknown",
+            "error_type": type(last_err).__name__ if last_err is not None else "UnknownError",
+            "error_message": (
+                _sanitize_error_message(last_err, config.api_key)
+                if last_err is not None
+                else "OpenAI-compatible chat call failed without an exception"
+            ),
+        })
     raise RuntimeError(
         f"OpenAI-compatible chat call failed after {retries} retries: {last_err}"
     )

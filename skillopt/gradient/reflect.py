@@ -27,6 +27,10 @@ import random
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from skillopt.gradient.optimizer_diagnostics import (
+    AnalystDiagnosticSession,
+    OptimizerDiagnosticsWriter,
+)
 from skillopt.model import chat_optimizer
 from skillopt.optimizer.meta_skill import format_meta_skill_context
 from skillopt.optimizer.skill_aware import (
@@ -40,7 +44,6 @@ from skillopt.optimizer.update_modes import (
     get_payload_items,
     is_full_rewrite_minibatch_mode,
     normalize_update_mode,
-    payload_key,
     payload_label,
     truncate_payload,
 )
@@ -279,6 +282,9 @@ def run_error_analyst_minibatch(
     meta_skill_context: str = "",
     update_mode: str = "patch",
     skill_aware_reflection: bool = False,
+    diagnostics_writer: OptimizerDiagnosticsWriter | None = None,
+    diagnostic_index: int | None = None,
+    logical_request_id: str = "",
 ) -> dict | None:
     """Analyze a minibatch of failed trajectories in one optimizer call.
 
@@ -343,14 +349,29 @@ def run_error_analyst_minibatch(
         user += optimizer_ctx + "\n\n"
     user += f"## Failed Trajectories ({len(items)} total)\n{trajectories_text}"
 
+    diagnostics = AnalystDiagnosticSession(
+        writer=diagnostics_writer,
+        diagnostic_index=diagnostic_index,
+        logical_request_id=logical_request_id,
+        system=actual_system,
+        user=user,
+        trajectories_text=trajectories_text,
+        skill_content=skill_content,
+        items=items,
+        source_type="failure",
+        update_mode=mode,
+    )
     try:
-        response, _ = chat_optimizer(
-            system=actual_system, user=user,
-            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(mode) else 16384,
-            retries=3,
-            stage="analyst",
-        )
+        with diagnostics.capture_backend():
+            response, _ = chat_optimizer(
+                system=actual_system, user=user,
+                max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(mode) else 16384,
+                retries=3,
+                stage="analyst",
+            )
+        diagnostics.record_response(response)
         result = extract_json(response)
+        diagnostics.record_parse(result, mode)
         if not result:
             return None
         notes = extract_appendix_notes(result) if skill_aware_reflection else []
@@ -358,21 +379,28 @@ def run_error_analyst_minibatch(
             result["source_type"] = "failure"
             if not is_full_rewrite_minibatch_mode(mode):
                 truncate_payload(result["patch"], edit_budget, mode)
+            diagnostics.record_after_budget(result["patch"], mode)
             if skill_aware_reflection:
                 result["appendix_notes"] = notes
+            diagnostics.record_returned(result)
             return result
         # Skill-aware: a batch may legitimately yield ONLY execution-lapse notes
         # (no body edit). Return a no-op patch so the notes still reach the
         # trainer via all_raw_patches; empty edits are dropped from the body
         # pipeline by _normalise_patches, so body behavior is unchanged.
         if skill_aware_reflection and notes:
-            return {
+            returned_patch = {
                 "source_type": "failure",
                 "patch": {"reasoning": "execution-lapse only", "edits": []},
                 "appendix_notes": notes,
             }
-    except Exception:  # noqa: BLE001
+            diagnostics.record_returned(returned_patch)
+            return returned_patch
+    except Exception as exc:  # noqa: BLE001
+        diagnostics.record_exception(exc)
         traceback.print_exc()
+    finally:
+        diagnostics.persist()
     return None
 
 
@@ -389,6 +417,9 @@ def run_success_analyst_minibatch(
     update_mode: str = "patch",
     skill_aware_reflection: bool = False,
     emit_appendix_notes: bool = True,
+    diagnostics_writer: OptimizerDiagnosticsWriter | None = None,
+    diagnostic_index: int | None = None,
+    logical_request_id: str = "",
 ) -> dict | None:
     """Analyze a minibatch of successful trajectories in one optimizer call.
 
@@ -440,23 +471,43 @@ def run_success_analyst_minibatch(
         user += optimizer_ctx + "\n\n"
     user += f"## Successful Trajectories ({len(items)} total)\n{trajectories_text}"
 
+    diagnostics = AnalystDiagnosticSession(
+        writer=diagnostics_writer,
+        diagnostic_index=diagnostic_index,
+        logical_request_id=logical_request_id,
+        system=actual_system,
+        user=user,
+        trajectories_text=trajectories_text,
+        skill_content=skill_content,
+        items=items,
+        source_type="success",
+        update_mode=mode,
+    )
     try:
-        response, _ = chat_optimizer(
-            system=actual_system, user=user,
-            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(mode) else 16384,
-            retries=3,
-            stage="analyst",
-        )
+        with diagnostics.capture_backend():
+            response, _ = chat_optimizer(
+                system=actual_system, user=user,
+                max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(mode) else 16384,
+                retries=3,
+                stage="analyst",
+            )
+        diagnostics.record_response(response)
         result = extract_json(response)
+        diagnostics.record_parse(result, mode)
         if result and "patch" in result:
             result["source_type"] = "success"
             if not is_full_rewrite_minibatch_mode(mode):
                 truncate_payload(result["patch"], edit_budget, mode)
+            diagnostics.record_after_budget(result["patch"], mode)
             if sa_emit:
                 result["appendix_notes"] = extract_appendix_notes(result)
+            diagnostics.record_returned(result)
             return result
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        diagnostics.record_exception(exc)
         traceback.print_exc()
+    finally:
+        diagnostics.persist()
     return None
 
 
@@ -502,6 +553,7 @@ def run_minibatch_reflect(
     update_mode: str = "patch",
     skill_aware_reflection: bool | None = None,
     skill_aware_appendix_source: str | None = None,
+    diagnostics_dir: str | None = None,
 ) -> list[dict | None]:
     """Full minibatch reflect stage: group → parallel optimizer calls → patches.
 
@@ -545,6 +597,11 @@ def run_minibatch_reflect(
         skill_aware_appendix_source = get_skill_aware_appendix_source()
 
     os.makedirs(patches_dir, exist_ok=True)
+    diagnostics_writer = (
+        OptimizerDiagnosticsWriter(diagnostics_dir)
+        if diagnostics_dir is not None
+        else None
+    )
 
     # Separate failure / success
     failures = [r for r in results if not r.get("hard") or float(r.get("hard", 0)) < 1e-9]
@@ -588,7 +645,12 @@ def run_minibatch_reflect(
             pending_succ.append((idx, batch))
 
     # ── Worker functions ──────────────────────────────────────────────────
-    def _do_fail(idx: int, batch: list[dict]) -> tuple[str, dict | None]:
+    def _do_fail(
+        idx: int,
+        batch: list[dict],
+        diagnostic_index: int | None,
+    ) -> tuple[str, dict | None]:
+        tag = f"minibatch_fail_{idx:03d}"
         patch = run_error_analyst_minibatch(
             skill_content, batch, prediction_dir,
             edit_budget=edit_budget,
@@ -600,10 +662,18 @@ def run_minibatch_reflect(
             meta_skill_context=meta_skill_context,
             update_mode=update_mode,
             skill_aware_reflection=skill_aware_reflection,
+            diagnostics_writer=diagnostics_writer,
+            diagnostic_index=diagnostic_index,
+            logical_request_id=tag,
         )
-        return f"minibatch_fail_{idx:03d}", patch
+        return tag, patch
 
-    def _do_succ(idx: int, batch: list[dict]) -> tuple[str, dict | None]:
+    def _do_succ(
+        idx: int,
+        batch: list[dict],
+        diagnostic_index: int | None,
+    ) -> tuple[str, dict | None]:
+        tag = f"minibatch_succ_{idx:03d}"
         patch = run_success_analyst_minibatch(
             skill_content, batch, prediction_dir,
             edit_budget=edit_budget,
@@ -614,22 +684,45 @@ def run_minibatch_reflect(
             update_mode=update_mode,
             skill_aware_reflection=skill_aware_reflection,
             emit_appendix_notes=(skill_aware_appendix_source != "failure_only"),
+            diagnostics_writer=diagnostics_writer,
+            diagnostic_index=diagnostic_index,
+            logical_request_id=tag,
         )
-        return f"minibatch_succ_{idx:03d}", patch
+        return tag, patch
 
     # Run all pending minibatches in parallel
-    all_pending = (
+    pending_requests = (
         [("fail", idx, batch) for idx, batch in pending_fail]
         + [("succ", idx, batch) for idx, batch in pending_succ]
     )
+    diagnostic_indices = (
+        diagnostics_writer.reserve(len(pending_requests))
+        if diagnostics_writer is not None
+        else [None] * len(pending_requests)
+    )
+    all_pending = [
+        (kind, idx, batch, diagnostic_index)
+        for (kind, idx, batch), diagnostic_index in zip(
+            pending_requests,
+            diagnostic_indices,
+        )
+    ]
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {}
-        for kind, idx, batch in all_pending:
+        for kind, idx, batch, diagnostic_index in all_pending:
             if kind == "fail":
-                futs[ex.submit(_do_fail, idx, batch)] = (kind, idx, len(batch))
+                futs[ex.submit(_do_fail, idx, batch, diagnostic_index)] = (
+                    kind,
+                    idx,
+                    len(batch),
+                )
             else:
-                futs[ex.submit(_do_succ, idx, batch)] = (kind, idx, len(batch))
+                futs[ex.submit(_do_succ, idx, batch, diagnostic_index)] = (
+                    kind,
+                    idx,
+                    len(batch),
+                )
 
         for i, fut in enumerate(as_completed(futs), 1):
             kind, idx, batch_len = futs[fut]

@@ -259,6 +259,10 @@ class EnvAdapter(ABC):
             patches_dir=kwargs.get(
                 "patches_dir", os.path.join(out_dir, "patches")
             ),
+            diagnostics_dir=kwargs.get(
+                "optimizer_diagnostics_dir",
+                os.path.join(out_dir, "optimizer_diagnostics"),
+            ),
             workers=self.analyst_workers,
             failure_only=self.failure_only,
             minibatch_size=self.minibatch_size,

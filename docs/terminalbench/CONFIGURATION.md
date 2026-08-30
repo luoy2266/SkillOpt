@@ -100,6 +100,68 @@ TerminalBenchAdapter -> Harbor -> Terminus-2 -> DeepSeek-V4-Flash-0731
 
 No Harbor target-model backend is registered in SkillOpt.
 
+## Optimizer reflection diagnostics
+
+Trainer reflection calls write SkillOpt-owned diagnostics under the current
+step directory:
+
+```text
+<out_root>/
+  steps/
+    step_0001/
+      optimizer_diagnostics/
+        attempts.jsonl
+        response_0001.txt
+        parse_0001.json
+```
+
+This namespace is separate from
+`harbor_runtime/.../agent/request_events.jsonl`. Harbor request events describe
+Terminus target-model traffic; `optimizer_diagnostics/` describes the SkillOpt
+Python process calling its configured reflection/optimizer backend.
+
+`attempts.jsonl` contains one deterministic record per logical reflection
+request. Records include the stage, task IDs, backend and request model,
+scheme/host-only endpoint, reasoning effort, prompt character counts and
+SHA-256 identities, request/completion token limits, usage, application-level
+attempts, latency, finish reason, response byte count/hash, and parser status.
+SDK-internal transport retry counts are recorded as `unknown` when the SDK does
+not expose them.
+
+The raw response file is the exact UTF-8 text returned by `chat_optimizer()` to
+the production parser. It is not stripped, repaired, normalized, or
+pretty-printed. An empty response is persisted as a zero-byte file. When
+`extract_json()` succeeds, `parse_NNNN.json` contains that exact extracted JSON
+structure before source tagging or edit-budget truncation. Failed extraction
+does not create a synthetic parse artifact.
+
+Prompt text is not persisted by default. The ledger records system/user prompt
+character and byte counts plus SHA-256 identities, along with formatted
+trajectory and current-skill character counts. This provides prompt identity
+without making every generic OpenAI-compatible caller persist potentially
+sensitive prompt content.
+
+The stable parser statuses are:
+
+```text
+transport_error
+empty_response
+json_extract_failed
+missing_patch
+invalid_patch_type
+missing_edits
+invalid_edits_type
+empty_edits
+patch_returned
+exception
+```
+
+Diagnostics never contain API keys, Authorization headers, bearer tokens, or
+cookies. Endpoint metadata is limited to scheme plus host. Diagnostic directory
+creation and writability are checked before reflection requests start. A later
+individual artifact-write failure emits an explicit warning but preserves the
+existing model response and parser/update semantics.
+
 ## Phase 9 single-task smoke
 
 Use `eval_only.py`, one explicit split, and a clean unique output root:

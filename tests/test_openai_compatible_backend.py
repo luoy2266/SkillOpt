@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,17 +12,35 @@ import pytest
 import skillopt.model as model
 from skillopt.model import backend_config
 from skillopt.model import openai_compatible_backend as backend
+from skillopt.model.common import capture_model_diagnostics
 
 
 class _CompletionRecorder:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        content: str = "ok",
+        finish_reason: str = "stop",
+    ) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.content = content
+        self.finish_reason = finish_reason
 
     def create(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
-        message = SimpleNamespace(content="ok", tool_calls=[])
+        message = SimpleNamespace(content=self.content, tool_calls=[])
         usage = SimpleNamespace(prompt_tokens=2, completion_tokens=3, total_tokens=5)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
+        return SimpleNamespace(
+            id="response-id",
+            model="provider-model",
+            choices=[
+                SimpleNamespace(
+                    message=message,
+                    finish_reason=self.finish_reason,
+                )
+            ],
+            usage=usage,
+        )
 
 
 class _Client:
@@ -151,6 +171,91 @@ def test_client_creation_is_lazy(monkeypatch: pytest.MonkeyPatch) -> None:
     backend._get_client("optimizer")
 
     assert builds == [backend.OPTIMIZER_CONFIG.deployment]
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+def test_optimizer_diagnostics_capture_choice_and_token_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    finish_reason: str,
+) -> None:
+    response = '{"status":"ok"}'
+    calls = _CompletionRecorder(content=response, finish_reason=finish_reason)
+    monkeypatch.setattr(backend, "_get_client", lambda role: _Client(calls))
+    model.set_optimizer_backend("openai_compatible")
+    backend.OPTIMIZER_CONFIG.base_url = "https://provider.example/v1/chat/completions"
+    backend.OPTIMIZER_CONFIG.api_key = "sk-THIS-MUST-NOT-APPEAR"
+    backend.OPTIMIZER_CONFIG.deployment = "optimizer-model"
+    backend.OPTIMIZER_CONFIG.max_tokens = 8000
+    backend.set_reasoning_effort("max")
+    events: list[dict[str, Any]] = []
+
+    with capture_model_diagnostics(
+        events.append,
+        context={"logical_request_id": "reflection-0001"},
+    ):
+        text, usage = model.chat_optimizer(
+            "system",
+            "user",
+            max_completion_tokens=16384,
+            retries=1,
+            stage="analyst",
+        )
+
+    assert text == response
+    assert usage == {
+        "prompt_tokens": 2,
+        "completion_tokens": 3,
+        "total_tokens": 5,
+    }
+    assert calls.calls[0]["max_tokens"] == 8000
+    assert calls.calls[0]["reasoning_effort"] == "max"
+    assert len(events) == 1
+    event = events[0]
+    assert event["logical_request_id"] == "reflection-0001"
+    assert event["role"] == "optimizer"
+    assert event["backend"] == "openai_compatible"
+    assert event["model"] == "optimizer-model"
+    assert event["endpoint"] == "https://provider.example"
+    assert event["reasoning_effort"] == "max"
+    assert event["caller_requested_max_tokens"] == 16384
+    assert event["backend_configured_max_tokens"] == 8000
+    assert event["effective_request_max_tokens"] == 8000
+    assert event["finish_reason"] == finish_reason
+    assert event["response_bytes"] == len(response.encode("utf-8"))
+    assert event["response_sha256"] == hashlib.sha256(response.encode("utf-8")).hexdigest()
+    assert event["usage"] == usage
+    assert event["response_id"] == "response-id"
+    assert event["provider_model"] == "provider-model"
+    assert event["backend_attempt_count"] == 1
+    assert event["backend_attempts"][0]["backend_attempt_index"] == 1
+    assert event["sdk_transport_attempts"] == "unknown"
+    assert "sk-THIS-MUST-NOT-APPEAR" not in json.dumps(event)
+
+
+def test_optimizer_diagnostics_redact_credentials_from_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-THIS-MUST-NOT-APPEAR"
+
+    class FailingCompletions:
+        def create(self, **kwargs: Any) -> Any:
+            raise RuntimeError(f"Authorization: Bearer {secret}; api_key={secret}")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FailingCompletions()))
+    monkeypatch.setattr(backend, "_get_client", lambda role: client)
+    monkeypatch.setattr(backend.time, "sleep", lambda seconds: None)
+    model.set_optimizer_backend("openai_compatible")
+    backend.OPTIMIZER_CONFIG.api_key = secret
+    events: list[dict[str, Any]] = []
+
+    with capture_model_diagnostics(events.append):
+        with pytest.raises(RuntimeError, match="failed after 1 retries"):
+            model.chat_optimizer("system", "user", retries=1)
+
+    assert len(events) == 1
+    serialized = json.dumps(events[0])
+    assert secret not in serialized
+    assert "[REDACTED]" in serialized
 
 
 def test_combined_token_summary_counts_each_backend_once(

@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import json
 import threading
+import warnings
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -132,6 +136,48 @@ class TokenTracker:
 
 
 tracker = TokenTracker()
+
+
+ModelDiagnosticSink = Callable[[dict[str, Any]], None]
+_MODEL_DIAGNOSTIC_CONTEXT: ContextVar[
+    tuple[ModelDiagnosticSink, dict[str, Any]] | None
+] = ContextVar("skillopt_model_diagnostic_context", default=None)
+
+
+@contextmanager
+def capture_model_diagnostics(
+    sink: ModelDiagnosticSink,
+    *,
+    context: dict[str, Any] | None = None,
+) -> Iterator[None]:
+    """Temporarily capture backend metadata without changing chat return values."""
+    token = _MODEL_DIAGNOSTIC_CONTEXT.set((sink, dict(context or {})))
+    try:
+        yield
+    finally:
+        _MODEL_DIAGNOSTIC_CONTEXT.reset(token)
+
+
+def model_diagnostics_enabled() -> bool:
+    return _MODEL_DIAGNOSTIC_CONTEXT.get() is not None
+
+
+def emit_model_diagnostic(record: dict[str, Any]) -> None:
+    """Send one safe metadata record to the active context-local sink."""
+    active = _MODEL_DIAGNOSTIC_CONTEXT.get()
+    if active is None:
+        return
+    sink, context = active
+    payload = dict(context)
+    payload.update(record)
+    try:
+        sink(payload)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not alter model semantics
+        warnings.warn(
+            f"Model diagnostics sink failed: {type(exc).__name__}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 @dataclass
