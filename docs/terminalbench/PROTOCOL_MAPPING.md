@@ -105,6 +105,11 @@ Relevant default hooks are:
 - `get_dataloader()`: returns `None` by default. Returning the loader activates
   the trainer's `BatchSpec`/epoch-planning path.
 - `requires_ray()`: defaults to `False`.
+- `get_task_types()` is used only for final per-type reporting. The pinned
+  trainer assigns results without a `task_type` field to its existing
+  `"other"` bucket. Phase 6 intentionally returns the parser output unchanged,
+  so the Terminal-Bench adapter reports `["other"]` rather than inventing a
+  task taxonomy or rewriting rollout results.
 - `build_reference_text`, `get_reference_metadata`,
   `attach_reference_context`, and `select_representative_items`: available
   helper hooks, but the pinned trainer has no call site for them. A future
@@ -156,6 +161,22 @@ method; verifier parsing and score assignment belong inside rollout handling.
 `eval_only.py` differs slightly: after `adapter.setup(cfg)`, it calls
 `adapter.build_eval_env(...)` directly rather than using
 `dataloader.build_eval_batch(...)` plus `build_env_from_batch(...)`.
+
+### Rollout directory identity
+
+Within one trainer execution, ordinary rollout directories are separated by
+their upstream phase identity: global step and accumulation batch for training,
+global step for candidate selection, epoch for slow/meta updates, and dedicated
+baseline/final/test directory names. `eval_only.py` performs exactly one
+rollout under its absolute `out_root`.
+
+Longitudinal top-up is the exception to relying on the directory alone: the
+pinned trainer builds its final path component with lossy `_safe_pair_id()`
+normalization and truncation. Distinct exact task IDs can therefore produce the
+same top-up `out_dir`. The Terminal-Bench result name hashes both the absolute
+rollout directory and the ordered exact batch task IDs. Reusing the same output
+root with the same batch remains the same run identity and fails closed at the
+Phase 6 existing-job check rather than silently reusing Harbor output.
 
 ## `SplitDataLoader` contract
 

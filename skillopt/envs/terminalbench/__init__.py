@@ -1,5 +1,6 @@
 """Terminal-Bench environment support."""
 
+from skillopt.envs.terminalbench.adapter import TerminalBenchAdapter
 from skillopt.envs.terminalbench.dataloader import TerminalBenchDataLoader
 from skillopt.envs.terminalbench.harbor_runner import (
     HarborExecutionError,
@@ -29,6 +30,7 @@ __all__ = [
     "InfrastructureInvalidTrialError",
     "PackagedSkill",
     "PreparedHarborRun",
+    "TerminalBenchAdapter",
     "TerminalBenchDataLoader",
     "TerminalBenchRolloutError",
     "TrajectoryConversionError",
