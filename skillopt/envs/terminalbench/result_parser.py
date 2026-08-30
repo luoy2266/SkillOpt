@@ -15,6 +15,7 @@ _SCORED_AGENT_EXCEPTIONS = {
     "AgentTimeoutError",
     "NonZeroAgentExitCodeError",
 }
+_TASK_NAME_PREFIX = "terminal-bench/"
 
 
 class InfrastructureInvalidTrialError(RuntimeError):
@@ -35,7 +36,11 @@ def parse_trial_result(
     result = _load_result(path)
 
     _require_timestamp(result.get("finished_at"), "finished_at", path)
-    _validate_task_identity(result, expected_task_id, path)
+    validate_terminalbench_trial_identity(
+        result,
+        expected_task_id=expected_task_id,
+        result_path=path,
+    )
     _validate_verifier_timing(result.get("verifier"), path)
     raw_reward = _extract_reward(result.get("verifier_result"), path)
     trial_status = _classify_exception(result, path)
@@ -78,18 +83,14 @@ def _load_result(path: Path) -> dict[str, Any]:
     return result
 
 
-def _validate_task_identity(
+def validate_terminalbench_trial_identity(
     result: Mapping[str, Any],
-    expected_task_id: str,
-    path: Path,
-) -> None:
-    task_name = result.get("task_name")
-    if task_name != expected_task_id:
-        raise InfrastructureInvalidTrialError(
-            "Harbor trial task_name does not match the expected task ID: "
-            f"expected {expected_task_id!r}, got {task_name!r}, path={path}"
-        )
-
+    *,
+    result_path: str | os.PathLike[str],
+    expected_task_id: str | None = None,
+) -> str:
+    """Return the selector ID after validating Terminal-Bench trial identity."""
+    path = _result_path(result_path)
     task_id = result.get("task_id")
     if not isinstance(task_id, Mapping):
         raise InfrastructureInvalidTrialError(
@@ -100,12 +101,30 @@ def _validate_task_identity(
         raise InfrastructureInvalidTrialError(
             f"Harbor trial task_id is missing its local path: {path}"
         )
-    actual_task_id = Path(task_source_path).name
-    if actual_task_id != expected_task_id:
+    try:
+        selector_id = validate_task_id(
+            Path(task_source_path).name,
+            context="Harbor trial task_id path basename",
+        )
+    except (TypeError, ValueError) as exc:
+        raise InfrastructureInvalidTrialError(
+            f"Harbor trial task_id path has an invalid basename: {path}"
+        ) from exc
+
+    if expected_task_id is not None and selector_id != expected_task_id:
         raise InfrastructureInvalidTrialError(
             "Harbor trial task_id path does not match the expected task ID: "
-            f"expected {expected_task_id!r}, got {actual_task_id!r}, path={path}"
+            f"expected {expected_task_id!r}, got {selector_id!r}, path={path}"
         )
+
+    task_name = result.get("task_name")
+    canonical_task_name = f"{_TASK_NAME_PREFIX}{selector_id}"
+    if task_name != canonical_task_name:
+        raise InfrastructureInvalidTrialError(
+            "Harbor trial task_name is not the canonical Terminal-Bench name: "
+            f"expected {canonical_task_name!r}, got {task_name!r}, path={path}"
+        )
+    return selector_id
 
 
 def _validate_verifier_timing(value: Any, path: Path) -> None:

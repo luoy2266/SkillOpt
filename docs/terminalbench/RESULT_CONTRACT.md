@@ -75,9 +75,22 @@ For the current local Terminal-Bench dataset route, `task_id` serializes as:
 {"path": "/absolute/task/source/<task-id>"}
 ```
 
-The actual task ID is the basename of that path. Harbor's Terminal-Bench mapper
-also preserves the source task directory name as `task_name`. Phase 4 requires
-both values to equal the expected manifest task ID.
+The selector/manifest task ID is the basename of that path. A static audit on
+2026-08-30 of all 89 tasks in Terminal-Bench v2.1 revision
+`7131e4375048a0e408a8fb404b5f499d726b695b` confirmed this invariant for every
+task directory `X`:
+
+```text
+directory basename / selector ID = X
+task.toml [task].name             = terminal-bench/X
+TrialResult.task_name             = terminal-bench/X
+basename(TrialResult.task_id.path)= X
+```
+
+Phase 4 therefore requires the path basename to equal the expected manifest
+ID and requires `task_name` to equal exactly `terminal-bench/<manifest-id>`.
+It does not accept an unprefixed name, another benchmark prefix, or suffix
+matching.
 
 ## Verifier reward
 

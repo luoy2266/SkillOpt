@@ -11,7 +11,11 @@ from typing import Any
 
 from skillopt.envs.terminalbench.dataloader import normalize_manifest_item
 from skillopt.envs.terminalbench.harbor_runner import HarborRunner, PreparedHarborRun
-from skillopt.envs.terminalbench.result_parser import parse_trial_result
+from skillopt.envs.terminalbench.result_parser import (
+    InfrastructureInvalidTrialError,
+    parse_trial_result,
+    validate_terminalbench_trial_identity,
+)
 from skillopt.envs.terminalbench.skill_pack import package_skill_content
 from skillopt.envs.terminalbench.trajectory import (
     conversation_output_path,
@@ -144,16 +148,19 @@ def _discover_trials(
             child / "result.json",
             "Harbor trial result",
         )
-        task_name = trial_result.get("task_name")
-        if not isinstance(task_name, str) or not task_name:
-            raise TerminalBenchRolloutError(
-                f"Harbor trial result is missing task_name: {child / 'result.json'}"
+        result_path = child / "result.json"
+        try:
+            selector_id = validate_terminalbench_trial_identity(
+                trial_result,
+                result_path=result_path,
             )
-        if task_name in trials_by_task:
+        except InfrastructureInvalidTrialError as exc:
+            raise TerminalBenchRolloutError(str(exc)) from exc
+        if selector_id in trials_by_task:
             raise TerminalBenchRolloutError(
-                f"Duplicate Harbor trials for task {task_name!r}: {job_dir}"
+                f"Duplicate Harbor trials for task {selector_id!r}: {job_dir}"
             )
-        trials_by_task[task_name] = child
+        trials_by_task[selector_id] = child
 
     expected = set(expected_task_ids)
     discovered = set(trials_by_task)

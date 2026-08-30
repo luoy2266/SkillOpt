@@ -110,7 +110,7 @@ class TerminalBenchRolloutTests(unittest.TestCase):
             }
         return {
             "id": "00000000-0000-0000-0000-000000000001",
-            "task_name": task_id,
+            "task_name": f"terminal-bench/{task_id}",
             "trial_name": f"{task_id}__synthetic",
             "trial_uri": f"file:///synthetic/{task_id}",
             "task_id": {"path": f"/synthetic/tasks/{task_id}"},
@@ -243,14 +243,17 @@ class TerminalBenchRolloutTests(unittest.TestCase):
             task_id = trial["task_id"]
             result_artifact = trial.get("result_artifact", "valid")
             if result_artifact == "valid":
+                trial_result = self._trial_result(
+                    task_id,
+                    reward=trial.get("reward", 1.0),
+                    exception_type=trial.get("exception_type"),
+                )
+                if "task_name" in trial:
+                    trial_result["task_name"] = trial["task_name"]
+                if "task_path" in trial:
+                    trial_result["task_id"] = {"path": trial["task_path"]}
                 (trial_dir / "result.json").write_text(
-                    json.dumps(
-                        self._trial_result(
-                            task_id,
-                            reward=trial.get("reward", 1.0),
-                            exception_type=trial.get("exception_type"),
-                        )
-                    ),
+                    json.dumps(trial_result),
                     encoding="utf-8",
                 )
             elif result_artifact == "malformed":
@@ -401,6 +404,51 @@ class TerminalBenchRolloutTests(unittest.TestCase):
             self._run(
                 [{"id": "task-a"}],
                 [{"task_id": "task-b"}],
+            )
+
+    def test_unprefixed_task_name_fails_discovery(self) -> None:
+        with self.assertRaisesRegex(
+            TerminalBenchRolloutError,
+            "not the canonical Terminal-Bench name",
+        ):
+            self._run(
+                [{"id": "task-a"}],
+                [{"task_id": "task-a", "task_name": "task-a"}],
+            )
+
+    def test_wrong_task_name_prefix_fails_discovery(self) -> None:
+        with self.assertRaisesRegex(
+            TerminalBenchRolloutError,
+            "not the canonical Terminal-Bench name",
+        ):
+            self._run(
+                [{"id": "task-a"}],
+                [{"task_id": "task-a", "task_name": "other-bench/task-a"}],
+            )
+
+    def test_missing_task_name_fails_discovery(self) -> None:
+        with self.assertRaisesRegex(
+            TerminalBenchRolloutError,
+            "not the canonical Terminal-Bench name",
+        ):
+            self._run(
+                [{"id": "task-a"}],
+                [{"task_id": "task-a", "task_name": None}],
+            )
+
+    def test_mismatched_task_path_and_canonical_name_fail_discovery(self) -> None:
+        with self.assertRaisesRegex(
+            TerminalBenchRolloutError,
+            "not the canonical Terminal-Bench name",
+        ):
+            self._run(
+                [{"id": "task-a"}],
+                [
+                    {
+                        "task_id": "task-a",
+                        "task_path": "/synthetic/tasks/task-b",
+                    }
+                ],
             )
 
     def test_incomplete_job_fails_closed(self) -> None:

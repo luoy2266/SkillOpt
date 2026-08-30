@@ -161,7 +161,8 @@ python3 scripts/eval_only.py \
 - [ ] `skillopt/envs/terminalbench/skills/initial.md` exists
 - [ ] Expected SkillOpt and Harbor output roots are clean
 
-The real manifest-ID/Harbor task-name identity, native skill discovery, job
-completion artifacts, trial cardinality, trajectory location, AgentTimeout,
-and infrastructure-invalid artifacts remain unverified until the Phase 9
-single-task integration smoke.
+The 89-task source audit has confirmed the selector ID `X` maps to canonical
+Harbor `task_name` `terminal-bench/X`. The first real smoke must still confirm
+that the persisted trial artifacts follow that audited contract. Native skill
+discovery, job completion artifacts, trial cardinality, trajectory location,
+AgentTimeout, and infrastructure-invalid artifacts also remain unverified.

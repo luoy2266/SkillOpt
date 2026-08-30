@@ -438,8 +438,9 @@ Static inspection and public CLI parsing against the pinned local Harbor
   field in `JobConfig`;
 - repeat and concurrency are `n_attempts` and `n_concurrent_trials`;
 - dataset task selection is `datasets[].task_names`, a list of `fnmatch`
-  patterns applied to Harbor task names; Terminal-Bench exact IDs therefore
-  require clearing `exclude_task_names` and `n_tasks` in the resolved overlay;
+  patterns applied to local `LocalTaskId.get_name()` selector IDs (the task
+  directory basename); Terminal-Bench exact IDs therefore require clearing
+  `exclude_task_names` and `n_tasks` in the resolved overlay;
 - the Docker runtime is `environment.type: docker`, or Harbor's same Docker
   default when both environment type and import path are absent;
 - a future job writes job-level `config.json`, `lock.json`, `result.json`, and
@@ -491,8 +492,20 @@ mapping, integrity, and timeout details are recorded in
 Pinned source inspection confirmed that `Job._init_trial_configs()` creates the
 product of attempts, tasks, and agents. With the frozen single Terminus-2 agent
 and Phase 6 `n_attempts=1`, exactly one trial is expected for each selected task.
-Trial directory names contain a random suffix and are not task identity; each
-immediate trial `result.json` must be loaded and mapped by its real `task_name`.
+Trial directory names contain a random suffix and are not task identity. A
+2026-08-30 audit of all 89 tasks in pinned Terminal-Bench v2.1 revision
+`7131e4375048a0e408a8fb404b5f499d726b695b` confirmed the strict two-level
+identity contract for every task directory `X`:
+
+```text
+manifest / dataset selector ID = X
+basename(task_id.path)         = X
+TrialResult.task_name          = terminal-bench/X
+```
+
+Phase 6 maps each immediate trial by the validated `task_id.path` basename and
+also requires the canonical `task_name` to match exactly. Phase 4 repeats the
+same shared identity validation before scoring.
 
 Persisted job `result.json` excludes `trial_results`. A trustworthy completed
 batch instead requires non-null `finished_at`, exact total/completed counts, and

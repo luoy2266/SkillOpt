@@ -37,7 +37,7 @@ class TerminalBenchResultParserTests(unittest.TestCase):
             }
         return {
             "id": "00000000-0000-0000-0000-000000000001",
-            "task_name": self.task_id,
+            "task_name": f"terminal-bench/{self.task_id}",
             "trial_name": "fixture-task__trial",
             "trial_uri": "file:///fixture/trial",
             "task_id": {"path": f"/fixture/tasks/{self.task_id}"},
@@ -94,6 +94,19 @@ class TerminalBenchResultParserTests(unittest.TestCase):
                 "harbor_result_path": str(self.result_path.resolve()),
             },
         )
+
+    def test_real_terminalbench_canonical_identity_shape_is_accepted(self) -> None:
+        task_id = "git-leak-recovery"
+        fixture = self._fixture(1)
+        fixture["task_name"] = f"terminal-bench/{task_id}"
+        fixture["task_id"] = {"path": f"/fixture/tasks/{task_id}"}
+
+        result = parse_trial_result(
+            self._write(fixture),
+            expected_task_id=task_id,
+        )
+
+        self.assertEqual(result["id"], task_id)
 
     def test_valid_failure_remains_normal_scored_outcome(self) -> None:
         result = self._parse(self._fixture(0))
@@ -179,13 +192,23 @@ class TerminalBenchResultParserTests(unittest.TestCase):
                 with self.assertRaises(InfrastructureInvalidTrialError):
                     self._parse(fixture)
 
-    def test_wrong_task_name_fails_closed(self) -> None:
+    def test_old_unprefixed_task_name_fails_closed(self) -> None:
         fixture = self._fixture()
-        fixture["task_name"] = "other-task"
+        fixture["task_name"] = self.task_id
 
         with self.assertRaisesRegex(
             InfrastructureInvalidTrialError,
-            "task_name does not match",
+            "not the canonical Terminal-Bench name",
+        ):
+            self._parse(fixture)
+
+    def test_wrong_canonical_task_name_prefix_fails_closed(self) -> None:
+        fixture = self._fixture()
+        fixture["task_name"] = f"other-bench/{self.task_id}"
+
+        with self.assertRaisesRegex(
+            InfrastructureInvalidTrialError,
+            "not the canonical Terminal-Bench name",
         ):
             self._parse(fixture)
 
@@ -198,6 +221,23 @@ class TerminalBenchResultParserTests(unittest.TestCase):
             "task_id path does not match",
         ):
             self._parse(fixture)
+
+    def test_malformed_task_identity_fails_closed(self) -> None:
+        fixtures = []
+        missing_task_name = self._fixture()
+        missing_task_name["task_name"] = None
+        fixtures.append(missing_task_name)
+        missing_task_id = self._fixture()
+        missing_task_id["task_id"] = None
+        fixtures.append(missing_task_id)
+        missing_task_path = self._fixture()
+        missing_task_path["task_id"] = {"path": None}
+        fixtures.append(missing_task_path)
+
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                with self.assertRaises(InfrastructureInvalidTrialError):
+                    self._parse(fixture)
 
     def test_infrastructure_exception_does_not_become_zero_score(self) -> None:
         fixture = self._fixture(0, exception_type="EnvironmentStartTimeoutError")

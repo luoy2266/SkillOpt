@@ -170,34 +170,31 @@ the persisted completion contract and exact trial set after `run()` returns.
 
 Phase 6 inspects only immediate child directories of the explicit prepared job
 directory. For every child directory it loads that directory's `result.json`
-and uses the real `task_name` field. It never uses filesystem order, completion
-order, job aggregate ordering, or a trial directory name as task identity.
+and validates both persisted identity fields. It never uses filesystem order,
+completion order, job aggregate ordering, or a trial directory name as task
+identity.
 
 Discovery constructs:
 
 ```text
-task_name -> trial directory
+basename(task_id.path) selector ID -> trial directory
 ```
 
-and requires exact equality between expected and discovered task sets. Missing,
-unexpected, or duplicate task trials fail the whole batch. The Phase 4 parser
-then performs the stricter identity checks:
+Before using that selector key, the shared Phase 4 identity validator requires:
 
 ```text
-task_name == expected task id
-basename(task_id.path) == expected task id
+task_name == terminal-bench/<basename(task_id.path)>
 ```
 
-The first real single-task smoke must additionally confirm that all three real
-identities agree:
+The expected/discovered selector sets must then match exactly, and the Phase 4
+parse requires the selected path basename to equal the expected manifest ID:
 
 ```text
-split manifest task ID
-Harbor task_name
-basename(Harbor task_id.path)
+split manifest selector ID == basename(Harbor task_id.path)
+Harbor task_name            == terminal-bench/<selector-id>
 ```
 
-No Phase 6 code relaxes that frozen check.
+Missing, malformed, unexpected, or duplicate identities fail the whole batch.
 
 ## Result and trajectory pairing
 
@@ -283,7 +280,9 @@ provenance chain without a separate database.
 
 The first real single-task smoke must verify:
 
-1. the manifest ID, `task_name`, and basename of `task_id.path` are identical;
+1. the persisted result follows the statically audited two-level identity
+   contract: selector/path basename `X` and canonical `task_name`
+   `terminal-bench/X`;
 2. a successful CLI return produces the audited complete job result fields;
 3. exactly one trial directory is produced for `n_attempts=1`;
 4. the real trial writes both `result.json` and `agent/trajectory.json`;
