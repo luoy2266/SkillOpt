@@ -259,6 +259,20 @@ Conversation artifacts are written only under:
 <rollout_dir>/predictions/<task-id>/conversation.json
 ```
 
+Passing the same `rollout_dir` to Phase 2 and Phase 3 creates separate sibling
+namespaces:
+
+```text
+<rollout_dir>/harbor_skills/...
+<rollout_dir>/harbor_runtime/configs/...
+<rollout_dir>/harbor_runtime/jobs/<result-name>/...
+<rollout_dir>/predictions/<task-id>/conversation.json
+```
+
+SkillOpt may create `<rollout_dir>` before rollout. Harbor execution rejects
+only an existing concrete `harbor_runtime/jobs/<result-name>` directory, not
+the rollout root or the `predictions` directory.
+
 The Harbor job tree remains under the prepared jobs directory and is not copied.
 Each result retains Phase 4 fields plus lightweight paths to the resolved config
 and job directory and the Phase 2 skill digest. The persisted resolved config,
