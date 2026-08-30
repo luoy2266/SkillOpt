@@ -56,18 +56,41 @@ the base config's supported environment references/runtime environment.
 ## Optimizer and target boundary
 
 The checked-in config selects SkillOpt's native `openai_compatible` optimizer
-backend and optimizer model `DeepSeek-V4-Flash-0731`. Provide its endpoint and
+backend. Keep its API request identifier separate from experiment provenance:
+
+```text
+Optimizer API request model:          deepseek-v4-flash
+Underlying experiment/model identity: DeepSeek-V4-Flash-0731
+```
+
+The request model is passed directly to the OpenAI-compatible Chat Completions
+API; it does not use a LiteLLM provider prefix. Provide the endpoint and
 credential through the existing runtime variables:
 
 ```text
-OPTIMIZER_OPENAI_COMPATIBLE_BASE_URL
+OPTIMIZER_OPENAI_COMPATIBLE_BASE_URL=https://api.deepseek.com
 OPTIMIZER_OPENAI_COMPATIBLE_API_KEY
+```
+
+For a local process that already has `DEEPSEEK_API_KEY`, the credential may be
+bridged without persisting it:
+
+```bash
+OPTIMIZER_OPENAI_COMPATIBLE_API_KEY="$DEEPSEEK_API_KEY" \
+python3 scripts/train.py ...
 ```
 
 The shared `OPENAI_COMPATIBLE_*` variables remain an upstream fallback. The
 inherited SkillOpt `model.target` and `model.target_backend` fields are not
 consumed by `TerminalBenchAdapter`; they do not configure the Terminal-Bench
-target. The actual target path is exclusively:
+target. Its separate identity contract is:
+
+```text
+Harbor/LiteLLM request model:          deepseek/deepseek-v4-flash
+Underlying experiment/model identity: DeepSeek-V4-Flash-0731
+```
+
+The actual target path is exclusively:
 
 ```text
 TerminalBenchAdapter -> Harbor -> Terminus-2 -> DeepSeek-V4-Flash-0731
@@ -157,7 +180,8 @@ python3 scripts/eval_only.py \
 - [ ] Harbor base config validated independently
 - [ ] Terminus-2 2.0.0
 - [ ] DeepSeek-V4-Flash-0731 target config present in Harbor
-- [ ] SkillOpt optimizer config and credential available
+- [ ] SkillOpt optimizer endpoint and credential available
+- [ ] Optimizer request model is `deepseek-v4-flash`
 - [ ] `skillopt/envs/terminalbench/skills/initial.md` exists
 - [ ] Expected SkillOpt and Harbor output roots are clean
 
