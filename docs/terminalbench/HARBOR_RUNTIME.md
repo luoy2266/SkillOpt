@@ -1,8 +1,10 @@
 # Harbor 0.20.0 Runtime Configuration Boundary
 
 Phase 3 audit and implementation notes for the SkillOpt → Harbor boundary.
-This phase prepares and validates configs only. It does not create a Harbor
-job, start Docker, resolve Terminal-Bench tasks, or call a model.
+Phase 3 prepared and validated configs only. Phase 6 later enabled the exact
+prepared command through the public CLI; see `ROLLOUT_CONTRACT.md`. No migration
+test in either phase started Docker, resolved a real Terminal-Bench task, or
+called a model.
 
 ## Provenance
 
@@ -147,9 +149,9 @@ The migration uses the public CLI/subprocess boundary because:
 6. the CLI is easier to execute consistently under a future systemd/Docker
    server setup.
 
-Phase 3 invokes only `harbor --version` and `harbor run --print-config`. The
-prepared execution command is exposed but `HarborRunner.run()` fails loudly
-until a later phase intentionally enables subprocess execution.
+Phase 3 tests invoke only `harbor --version` and `harbor run --print-config`.
+Phase 6 intentionally enables `HarborRunner.run()` for the exact prepared
+command and validates job artifacts separately after process completion.
 
 ## Base config input contract
 
@@ -170,6 +172,9 @@ accept both the base and the resolved config through `--print-config`.
 Relative paths retained from the base config are interpreted with the base
 config's parent directory as the prepared subprocess working directory. New
 skill, config, jobs, and output paths are serialized as absolute paths.
+Harbor's loader does not rebase nested Path values against the resolved config
+file location, so both `--print-config` validation and execution must retain
+that same working directory.
 
 Harbor's YAML/JSON loader does not expand environment references.
 `--print-config` serializes agent/environment/verifier `env` mappings with
@@ -232,12 +237,14 @@ For `output_root=<root>` and `result_name=<name>`:
     ├── configs/<name>.json
     ├── dry_runs/<name>.json
     └── jobs/
-        └── <name>/          # expected future Harbor job directory; not created
+        └── <name>/          # created by a future real Harbor execution
 ```
 
 The resolved config and dry-run JSON use UTF-8, sorted keys, two-space
 indentation, and one trailing newline. Existing mismatched deterministic files
-raise an error instead of being overwritten.
+raise an error instead of being overwritten. `PreparedHarborRun` also retains
+the original resolved-config SHA-256; execution rejects later byte changes even
+if the exposed in-memory config mapping was changed to match them.
 
 The dry-run manifest contains only paths, selected task IDs, the native skills
 list, result name, expected job directory, prepared command, working directory,

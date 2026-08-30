@@ -1,7 +1,8 @@
-"""Harbor 0.20.0 config preparation without job execution."""
+"""Harbor 0.20.0 config preparation and public CLI execution."""
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -45,8 +46,8 @@ class HarborArtifactConflictError(HarborConfigError):
     """Raised when a deterministic artifact already contains other bytes."""
 
 
-class HarborExecutionDisabledError(RuntimeError):
-    """Raised because real Harbor execution is outside Phase 3."""
+class HarborExecutionError(RuntimeError):
+    """Raised when the prepared Harbor CLI execution cannot complete."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,7 @@ class PreparedHarborRun:
 
     resolved_config: dict[str, Any]
     resolved_config_path: Path
+    resolved_config_sha256: str
     dry_run_path: Path
     base_config_path: Path
     working_directory: Path
@@ -161,7 +163,7 @@ def assert_harbor_config_parity(
 
 
 class HarborRunner:
-    """Prepare Harbor 0.20.0 CLI configs while forbidding job execution."""
+    """Prepare and execute Harbor 0.20.0 through its public CLI."""
 
     def __init__(
         self,
@@ -233,6 +235,7 @@ class HarborRunner:
         return PreparedHarborRun(
             resolved_config=resolved_config,
             resolved_config_path=resolved_config_path,
+            resolved_config_sha256=hashlib.sha256(config_bytes).hexdigest(),
             dry_run_path=dry_runs_dir / f"{result_name}.json",
             base_config_path=self.base_config_path,
             working_directory=self.working_directory,
@@ -265,11 +268,67 @@ class HarborRunner:
         _write_or_verify(prepared.dry_run_path, _json_bytes(manifest))
         return manifest
 
-    def run(self, prepared: PreparedHarborRun) -> None:
-        """Refuse real execution until the later integration phase."""
-        raise HarborExecutionDisabledError(
-            "Real Harbor job execution is disabled in Phase 3; use dry_run(prepared)"
+    def run(
+        self,
+        prepared: PreparedHarborRun,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Execute one intact prepared config without interpreting job artifacts."""
+        expected_command = (
+            str(self.harbor_executable),
+            "run",
+            "--config",
+            str(prepared.resolved_config_path),
         )
+        if prepared.harbor_version != self.harbor_version:
+            raise HarborExecutionError("Prepared Harbor version does not match this runner")
+        if prepared.base_config_path != self.base_config_path:
+            raise HarborExecutionError("Prepared Harbor run belongs to another base config")
+        if prepared.working_directory != self.working_directory:
+            raise HarborExecutionError("Prepared Harbor working directory changed")
+        if prepared.command != expected_command:
+            raise HarborExecutionError("Prepared Harbor command changed")
+        if prepared.resolved_config_path.is_symlink():
+            raise HarborExecutionError(
+                f"Prepared Harbor config must not be a symlink: "
+                f"{prepared.resolved_config_path}"
+            )
+        try:
+            config_bytes = prepared.resolved_config_path.read_bytes()
+        except OSError as exc:
+            raise HarborExecutionError(
+                f"Prepared Harbor config is unavailable: {prepared.resolved_config_path}"
+            ) from exc
+        if hashlib.sha256(config_bytes).hexdigest() != prepared.resolved_config_sha256:
+            raise HarborExecutionError(
+                f"Prepared Harbor config changed: {prepared.resolved_config_path}"
+            )
+        if config_bytes != _json_bytes(prepared.resolved_config):
+            raise HarborExecutionError(
+                f"Prepared Harbor config changed: {prepared.resolved_config_path}"
+            )
+        if prepared.expected_job_dir.is_symlink() or prepared.expected_job_dir.exists():
+            raise HarborExecutionError(
+                f"Refusing to resume or overwrite an existing Harbor job: "
+                f"{prepared.expected_job_dir}"
+            )
+
+        try:
+            completed = subprocess.run(
+                list(prepared.command),
+                cwd=prepared.working_directory,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HarborExecutionError(
+                f"Unable to execute Harbor {EXPECTED_HARBOR_VERSION}"
+            ) from exc
+        if completed.returncode != 0:
+            raise HarborExecutionError(
+                f"Harbor exited with status {completed.returncode}: "
+                f"{' '.join(prepared.command)}"
+            )
+        return completed
 
     def _validate_version(self) -> str:
         completed = self._run_cli((str(self.harbor_executable), "--version"))

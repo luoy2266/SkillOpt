@@ -428,9 +428,9 @@ Static inspection and public CLI parsing against the pinned local Harbor
 
 The migration therefore uses a validated base config plus a minimal overlay,
 and selects Harbor's public CLI rather than importing its async/internal job
-API into SkillOpt. Phase 3 invokes only `--version` and `--print-config`; real
-execution remains disabled. Full details, parity rules, and artifact layout are
-recorded in `docs/terminalbench/HARBOR_RUNTIME.md`.
+API into SkillOpt. Phase 3 tests invoke only `--version` and `--print-config`;
+Phase 6 later enables the exact prepared command. Full details, parity rules,
+and artifact layout are recorded in `docs/terminalbench/HARBOR_RUNTIME.md`.
 
 ### Phase 4 Harbor 0.20.0 result audit
 
@@ -464,6 +464,27 @@ directory. Explicit `continued_trajectory_ref` chains are followed without
 job/trial scanning, while copied continuation context is skipped. Full schema,
 mapping, integrity, and timeout details are recorded in
 `docs/terminalbench/TRAJECTORY_CONTRACT.md`.
+
+### Phase 6 Harbor 0.20.0 rollout audit
+
+Pinned source inspection confirmed that `Job._init_trial_configs()` creates the
+product of attempts, tasks, and agents. With the frozen single Terminus-2 agent
+and Phase 6 `n_attempts=1`, exactly one trial is expected for each selected task.
+Trial directory names contain a random suffix and are not task identity; each
+immediate trial `result.json` must be loaded and mapped by its real `task_name`.
+
+Persisted job `result.json` excludes `trial_results`. A trustworthy completed
+batch instead requires non-null `finished_at`, exact total/completed counts, and
+zero running/pending counts, followed by exact trial discovery. A zero Harbor
+process exit is not sufficient. `n_errored_trials` may be nonzero for a scored
+agent timeout, so individual result validity remains the Phase 4 parser's job.
+
+Phase 6 pairs `result.json` and `agent/trajectory.json` only within the same
+trial directory, parses the result before converting ATIF, aborts the whole
+batch on any invalid trial, and restores the original input item order before
+returning SkillOpt rollout dictionaries. The exact execution, completeness,
+pairing, provenance, and deferred smoke-test contract is recorded in
+`docs/terminalbench/ROLLOUT_CONTRACT.md`.
 
 ## Registration and CLI contract
 

@@ -16,7 +16,7 @@ from skillopt.envs.terminalbench.harbor_runner import (
     EXPECTED_HARBOR_VERSION,
     HarborArtifactConflictError,
     HarborConfigError,
-    HarborExecutionDisabledError,
+    HarborExecutionError,
     HarborParityError,
     HarborRunner,
     HarborVersionError,
@@ -253,11 +253,23 @@ class TerminalBenchHarborConfigTests(unittest.TestCase):
             HarborRunner(self.root / "missing.yaml", valid_harbor)
 
     def test_invalid_base_contract_fails_loudly(self) -> None:
-        invalid = self._base_config()
-        invalid["agents"][0]["skills"] = ["preexisting-skill"]
+        fixtures = []
+        preloaded_skill = self._base_config()
+        preloaded_skill["agents"][0]["skills"] = ["preexisting-skill"]
+        fixtures.append((preloaded_skill, "baseline"))
 
-        with self.assertRaisesRegex(HarborConfigError, "baseline"):
-            load_harbor_base_config(self._write_base_config(invalid))
+        multiple_agents = self._base_config()
+        multiple_agents["agents"].append(copy.deepcopy(multiple_agents["agents"][0]))
+        fixtures.append((multiple_agents, "exactly one agent"))
+
+        wrong_agent = self._base_config()
+        wrong_agent["agents"][0]["name"] = "other-agent"
+        fixtures.append((wrong_agent, "terminus-2"))
+
+        for config, message in fixtures:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(HarborConfigError, message):
+                    load_harbor_base_config(self._write_base_config(config))
 
     def test_harbor_schema_rejection_fails_loudly(self) -> None:
         rejecting_harbor, _ = self._write_fake_harbor(accept_config=False)
@@ -296,8 +308,159 @@ class TerminalBenchHarborConfigTests(unittest.TestCase):
                 for invocation in invocations
             )
         )
-        with self.assertRaises(HarborExecutionDisabledError):
-            runner.run(prepared)
+        completed = subprocess.CompletedProcess(prepared.command, 0)
+        with patch(
+            "skillopt.envs.terminalbench.harbor_runner.subprocess.run",
+            return_value=completed,
+        ) as run:
+            self.assertIs(runner.run(prepared), completed)
+        run.assert_called_once_with(
+            list(prepared.command),
+            cwd=prepared.working_directory,
+            check=False,
+            shell=False,
+        )
+
+    def test_run_nonzero_exit_fails_without_capturing_output(self) -> None:
+        fake_harbor, _ = self._write_fake_harbor()
+        runner = HarborRunner(self._write_base_config(), fake_harbor)
+        prepared = runner.prepare(
+            task_ids=["task-a"],
+            harbor_skills=[],
+            result_name="nonzero-run",
+            output_root=self.root / "output",
+        )
+        completed = subprocess.CompletedProcess(prepared.command, 7)
+
+        with patch(
+            "skillopt.envs.terminalbench.harbor_runner.subprocess.run",
+            return_value=completed,
+        ):
+            with self.assertRaisesRegex(HarborExecutionError, "status 7"):
+                runner.run(prepared)
+
+    def test_run_rejects_existing_or_symlink_job_directory(self) -> None:
+        for symlink in (False, True):
+            with self.subTest(symlink=symlink):
+                fake_harbor, _ = self._write_fake_harbor()
+                runner = HarborRunner(self._write_base_config(), fake_harbor)
+                prepared = runner.prepare(
+                    task_ids=["task-a"],
+                    harbor_skills=[],
+                    result_name=f"existing-job-{symlink}",
+                    output_root=self.root / f"output-{symlink}",
+                )
+                if symlink:
+                    target = self.root / f"existing-target-{symlink}"
+                    target.mkdir()
+                    prepared.expected_job_dir.symlink_to(target, target_is_directory=True)
+                else:
+                    prepared.expected_job_dir.mkdir()
+
+                with patch(
+                    "skillopt.envs.terminalbench.harbor_runner.subprocess.run"
+                ) as execute:
+                    with self.assertRaisesRegex(
+                        HarborExecutionError,
+                        "existing Harbor job",
+                    ):
+                        runner.run(prepared)
+                execute.assert_not_called()
+
+    def test_run_rejects_config_tamper_even_when_memory_matches_file(self) -> None:
+        fake_harbor, _ = self._write_fake_harbor()
+        runner = HarborRunner(self._write_base_config(), fake_harbor)
+        prepared = runner.prepare(
+            task_ids=["task-a"],
+            harbor_skills=[],
+            result_name="tampered-run",
+            output_root=self.root / "output",
+        )
+        prepared.resolved_config["timeout_multiplier"] = 99
+        prepared.resolved_config_path.write_text(
+            json.dumps(
+                prepared.resolved_config,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with patch(
+            "skillopt.envs.terminalbench.harbor_runner.subprocess.run"
+        ) as execute:
+            with self.assertRaisesRegex(HarborExecutionError, "config changed"):
+                runner.run(prepared)
+        execute.assert_not_called()
+
+    def test_validation_and_run_share_base_config_cwd_for_relative_paths(self) -> None:
+        base_dir = self.root / "owner-config"
+        task_source = base_dir / "tasks"
+        task_source.mkdir(parents=True)
+        base = self._base_config()
+        base["datasets"][0]["path"] = "tasks"
+        base_path = base_dir / "base.yaml"
+        base_path.write_text(
+            yaml.safe_dump(base, sort_keys=False),
+            encoding="utf-8",
+        )
+        log_path = self.root / "cwd-invocations.jsonl"
+        fake_harbor = self.root / "fake-harbor-cwd"
+        fake_harbor.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "import os\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "import yaml\n"
+            f"log_path = {str(log_path)!r}\n"
+            "if sys.argv[1:] == ['--version']:\n"
+            f"    print({EXPECTED_HARBOR_VERSION!r})\n"
+            "    raise SystemExit(0)\n"
+            "if sys.argv[1:2] == ['run']:\n"
+            "    config_path = Path(sys.argv[sys.argv.index('--config') + 1])\n"
+            "    text = config_path.read_text(encoding='utf-8')\n"
+            "    config = (json.loads(text) if config_path.suffix == '.json' "
+            "else yaml.safe_load(text))\n"
+            "    dataset_path = Path(config['datasets'][0]['path'])\n"
+            "    record = {\n"
+            "        'cwd': os.getcwd(),\n"
+            "        'dataset_path': str(dataset_path.resolve()),\n"
+            "        'print_config': '--print-config' in sys.argv[1:],\n"
+            "    }\n"
+            "    with open(log_path, 'a', encoding='utf-8') as handle:\n"
+            "        handle.write(json.dumps(record) + '\\n')\n"
+            "    raise SystemExit(0)\n"
+            "raise SystemExit(97)\n",
+            encoding="utf-8",
+        )
+        fake_harbor.chmod(0o755)
+
+        runner = HarborRunner(base_path, fake_harbor)
+        prepared = runner.prepare(
+            task_ids=["task-a"],
+            harbor_skills=[],
+            result_name="relative-paths",
+            output_root=self.root / "output",
+        )
+        runner.run(prepared)
+
+        self.assertEqual(prepared.resolved_config["datasets"][0]["path"], "tasks")
+        invocations = [
+            json.loads(line)
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(len(invocations), 3)
+        self.assertTrue(all(row["cwd"] == str(base_dir) for row in invocations))
+        self.assertTrue(
+            all(row["dataset_path"] == str(task_source) for row in invocations)
+        )
+        self.assertEqual(
+            [row["print_config"] for row in invocations],
+            [True, True, False],
+        )
 
     def test_environment_secret_reference_is_preserved_without_plaintext_artifact(self) -> None:
         test_secret = "fixture-secret-that-must-not-be-written"
