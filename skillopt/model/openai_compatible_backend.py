@@ -97,6 +97,7 @@ def _initial_config(role: str) -> OpenAICompatibleConfig:
 
 OPTIMIZER_CONFIG = _initial_config("optimizer")
 TARGET_CONFIG = _initial_config("target")
+REASONING_EFFORT: str | None = None
 
 _config_lock = threading.Lock()
 _client_lock = threading.Lock()
@@ -174,6 +175,7 @@ def _chat_messages_impl(
     tool_choice: str | dict[str, Any] | None = None,
     return_message: bool = False,
     deployment: str | None = None,
+    reasoning_effort: str | None = None,
     timeout: float | None = None,
 ) -> tuple[Any, dict[str, int]]:
     config = _config_for(role)
@@ -187,6 +189,9 @@ def _chat_messages_impl(
     }
     if config.temperature is not None:
         kwargs["temperature"] = config.temperature
+    actual_effort = reasoning_effort or REASONING_EFFORT
+    if actual_effort is not None:
+        kwargs["reasoning_effort"] = actual_effort
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:
@@ -234,7 +239,6 @@ def chat_optimizer(
     reasoning_effort: str | None = None,
     timeout: float | None = None,
 ) -> tuple[str, dict[str, int]]:
-    del reasoning_effort  # not forwarded — kept for a uniform signature
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -245,6 +249,7 @@ def chat_optimizer(
         retries,
         stage,
         role="optimizer",
+        reasoning_effort=reasoning_effort,
         timeout=timeout,
     )
 
@@ -258,7 +263,6 @@ def chat_target(
     reasoning_effort: str | None = None,
     timeout: float | None = None,
 ) -> tuple[str, dict[str, int]]:
-    del reasoning_effort
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -269,6 +273,7 @@ def chat_target(
         retries,
         stage,
         role="target",
+        reasoning_effort=reasoning_effort,
         timeout=timeout,
     )
 
@@ -285,7 +290,6 @@ def chat_optimizer_messages(
     return_message: bool = False,
     timeout: float | None = None,
 ) -> tuple[Any, dict[str, int]]:
-    del reasoning_effort
     return _chat_messages_impl(
         messages,
         max_completion_tokens,
@@ -295,6 +299,7 @@ def chat_optimizer_messages(
         tools=tools,
         tool_choice=tool_choice,
         return_message=return_message,
+        reasoning_effort=reasoning_effort,
         timeout=timeout,
     )
 
@@ -311,7 +316,6 @@ def chat_target_messages(
     return_message: bool = False,
     timeout: float | None = None,
 ) -> tuple[Any, dict[str, int]]:
-    del reasoning_effort
     return _chat_messages_impl(
         messages,
         max_completion_tokens,
@@ -321,6 +325,7 @@ def chat_target_messages(
         tools=tools,
         tool_choice=tool_choice,
         return_message=return_message,
+        reasoning_effort=reasoning_effort,
         timeout=timeout,
     )
 
@@ -430,9 +435,8 @@ def reset_token_tracker() -> None:
 
 
 def set_reasoning_effort(effort: str | None) -> None:
-    # Reasoning effort is provider-specific and not universally supported by
-    # OpenAI-compatible endpoints, so it is intentionally a no-op here.
-    del effort
+    global REASONING_EFFORT
+    REASONING_EFFORT = effort if effort else None
 
 
 def set_target_deployment(deployment: str) -> None:

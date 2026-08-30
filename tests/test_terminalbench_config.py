@@ -132,6 +132,7 @@ class TerminalBenchConfigTests(unittest.TestCase):
         self.assertEqual(flat["env"], "terminalbench")
         self.assertEqual(flat["optimizer_backend"], "openai_compatible")
         self.assertEqual(flat["optimizer_model"], "deepseek-v4-flash")
+        self.assertEqual(flat["reasoning_effort"], "max")
         self.assertNotEqual(flat["optimizer_model"], "DeepSeek-V4-Flash-0731")
         self.assertEqual(
             flat["split_dir"],
@@ -232,6 +233,7 @@ class TerminalBenchConfigTests(unittest.TestCase):
         self.assertEqual(cfg["harbor_base_config"], str(self.harbor_base_config))
         self.assertEqual(cfg["optimizer_backend"], "openai_compatible")
         self.assertEqual(cfg["optimizer_model"], "deepseek-v4-flash")
+        self.assertEqual(cfg["reasoning_effort"], "max")
 
     def test_train_and_eval_registries_construct_and_setup_adapter(self) -> None:
         train_module, eval_module = self._load_registry_modules()

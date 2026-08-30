@@ -34,11 +34,13 @@ def isolate_backend_state(monkeypatch: pytest.MonkeyPatch):
     target_backend = backend_config.get_target_backend()
     optimizer_config = vars(backend.OPTIMIZER_CONFIG).copy()
     target_config = vars(backend.TARGET_CONFIG).copy()
+    reasoning_effort = backend.REASONING_EFFORT
     backend.reset_token_tracker()
     yield
     backend.reset_token_tracker()
     vars(backend.OPTIMIZER_CONFIG).update(optimizer_config)
     vars(backend.TARGET_CONFIG).update(target_config)
+    backend.REASONING_EFFORT = reasoning_effort
     backend_config.set_optimizer_backend(optimizer_backend)
     backend_config.set_target_backend(target_backend)
     backend._reset_clients()
@@ -78,11 +80,60 @@ def test_optimizer_and_target_route_to_their_own_clients(monkeypatch: pytest.Mon
     backend.OPTIMIZER_CONFIG.deployment = "optimizer-model"
     backend.TARGET_CONFIG.deployment = "target-model"
 
-    model.chat_optimizer("system", "user", retries=1)
-    model.chat_target_messages([{"role": "user", "content": "question"}], retries=1)
+    optimizer_text, optimizer_usage = model.chat_optimizer(
+        "system",
+        "user",
+        max_completion_tokens=123,
+        retries=1,
+        reasoning_effort="max",
+        timeout=7,
+    )
+    target_text, target_usage = model.chat_target_messages(
+        [{"role": "user", "content": "question"}], retries=1
+    )
 
     assert optimizer_calls.calls[0]["model"] == "optimizer-model"
+    assert optimizer_calls.calls[0]["messages"] == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "user"},
+    ]
+    assert optimizer_calls.calls[0]["max_tokens"] == 123
+    assert optimizer_calls.calls[0]["reasoning_effort"] == "max"
+    assert optimizer_calls.calls[0]["timeout"] == 7
     assert target_calls.calls[0]["model"] == "target-model"
+    assert "reasoning_effort" not in target_calls.calls[0]
+    assert optimizer_text == target_text == "ok"
+    assert optimizer_usage == target_usage == {
+        "prompt_tokens": 2,
+        "completion_tokens": 3,
+        "total_tokens": 5,
+    }
+
+
+@pytest.mark.parametrize("effort", ["max", "high"])
+def test_configured_reasoning_effort_is_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+    effort: str,
+) -> None:
+    calls = _CompletionRecorder()
+    monkeypatch.setattr(backend, "_get_client", lambda role: _Client(calls))
+    model.set_optimizer_backend("openai_compatible")
+
+    backend.set_reasoning_effort(effort)
+    model.chat_optimizer("system", "user", retries=1)
+
+    assert calls.calls[0]["reasoning_effort"] == effort
+
+
+def test_unset_reasoning_effort_is_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _CompletionRecorder()
+    monkeypatch.setattr(backend, "_get_client", lambda role: _Client(calls))
+    model.set_optimizer_backend("openai_compatible")
+
+    backend.set_reasoning_effort(None)
+    model.chat_optimizer("system", "user", retries=1)
+
+    assert "reasoning_effort" not in calls.calls[0]
 
 
 def test_client_creation_is_lazy(monkeypatch: pytest.MonkeyPatch) -> None:

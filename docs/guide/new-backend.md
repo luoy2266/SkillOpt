@@ -101,7 +101,10 @@ The generic backend uses the official `openai` SDK and the Chat Completions
 API. It records token usage through the shared tracker, supports provider tool
 calling through `chat_*_messages(..., tools=...)`, and exposes `count_tokens()`
 (tiktoken when available, with a character-based fallback). Provider-specific
-Responses API features are outside this backend's contract.
+Responses API features are outside this backend's contract. When the shared or
+per-call reasoning effort is set, the backend forwards it unchanged as the
+optional Chat Completions `reasoning_effort` parameter; leave it unset for
+providers that do not support that parameter.
 
 Only write a new backend when the provider is not compatible with this surface
 or requires behavior that cannot be expressed by its configuration.

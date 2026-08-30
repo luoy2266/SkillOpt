@@ -61,6 +61,7 @@ backend. Keep its API request identifier separate from experiment provenance:
 ```text
 Optimizer API request model:          deepseek-v4-flash
 Underlying experiment/model identity: DeepSeek-V4-Flash-0731
+Optimizer reasoning effort:           max
 ```
 
 The request model is passed directly to the OpenAI-compatible Chat Completions
@@ -88,6 +89,7 @@ target. Its separate identity contract is:
 ```text
 Harbor/LiteLLM request model:          deepseek/deepseek-v4-flash
 Underlying experiment/model identity: DeepSeek-V4-Flash-0731
+Terminus reasoning effort:             max
 ```
 
 The actual target path is exclusively:
