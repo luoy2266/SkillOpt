@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from scripts.preflight_terminalbench import _validate_harbor_config
+from scripts.preflight_terminalbench import EXPECTED_BRANCH, _validate_harbor_config
 from scripts.render_terminalbench_harbor_config import (
     render_harbor_config,
     write_harbor_config,
@@ -190,6 +190,15 @@ class TerminalBenchServerDeliveryTests(unittest.TestCase):
             with self.subTest(path=relative_path):
                 text = (self.repository_root / relative_path).read_text(encoding="utf-8")
                 self.assertNotIn("/home/yunl", text)
+
+    def test_preflight_branch_identity_matches_server_runbook(self) -> None:
+        runbook = (
+            self.repository_root / "docs" / "terminalbench" / "SERVER_RUNBOOK.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(EXPECTED_BRANCH, "terminalbench-v2.1-delivery")
+        self.assertNotEqual(EXPECTED_BRANCH, "terminalbench-v2.1")
+        self.assertIn(f"git switch {EXPECTED_BRANCH}", runbook)
 
     def test_systemd_launcher_exposes_complete_delivery_lifecycle(self) -> None:
         launcher = (

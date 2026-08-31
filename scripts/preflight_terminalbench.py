@@ -30,7 +30,7 @@ from skillopt.envs.terminalbench.skill_pack import (
 from scripts.freeze_terminalbench_skill import FreezeFailure, validate_frozen_skill
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_BRANCH = "terminalbench-v2.1"
+EXPECTED_BRANCH = "terminalbench-v2.1-delivery"
 EXPECTED_TBENCH_HEAD = "7131e4375048a0e408a8fb404b5f499d726b695b"
 EXPECTED_LEGACY_SPLIT_SHA256 = "8fa19aa350b90a7c39c3cde56f87a93bbfcb450586b416dc700c4c0b35827894"
 EXPECTED_PORTABLE_SPLIT_SHA256 = "bd36fe2f37a67cd2b46149263522d833166d3a4d036c8e9af082e742ad017500"
