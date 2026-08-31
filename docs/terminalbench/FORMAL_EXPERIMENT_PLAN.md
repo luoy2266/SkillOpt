@@ -77,6 +77,12 @@ defaults instead of inheriting them silently:
 | `env.n_concurrent_trials` | 1 | VALIDATED HARBOR BASE POLICY |
 | `evaluation.eval_test` | false | FORMAL ORCHESTRATION OVERRIDE |
 
+The checked-in YAML remains the conservative local profile. Server delivery
+sets one positive `SKILLOPT_TBENCH_CONCURRENCY` value and applies the same
+override to training, baseline-test, and skill-test. Preflight requires the
+requested value, resolved SkillOpt config, and rendered Harbor config to match;
+attempts remain `1` and Harbor retries remain `0`.
+
 The separate test commands prevent Trainer from mixing held-out evaluation
 artifacts into the training namespace. Formal learned-skill evaluation uses
 only `training/best_skill.md`; the final force-injected slow-update state is not

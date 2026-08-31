@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -84,6 +85,11 @@ class TerminalBenchSplitTests(unittest.TestCase):
 
             self.assertEqual(manifest["counts"], {"train": 9, "val": 9, "test": 71})
             self.assertEqual(manifest["source"]["revision"], "fixture-revision")
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(
+                manifest["semantic_identity"]["terminalbench_revision"],
+                "fixture-revision",
+            )
             self.assertEqual(manifest["item_fields"], ["category", "id"])
             self.assertTrue((output_dir / "split_manifest.json").is_file())
             self.assertTrue((output_dir / "split_manifest.sha256").is_file())
@@ -92,6 +98,86 @@ class TerminalBenchSplitTests(unittest.TestCase):
                     (output_dir / split_name / "items.json").read_text(encoding="utf-8")
                 )
                 self.assertTrue(all(set(item) == {"id", "category"} for item in items))
+
+    def test_semantic_hash_is_stable_across_source_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            digests = []
+            ordered_ids = []
+            manifest_paths = []
+            for name in ("a", "b"):
+                source_dir = root / name / "terminal-bench" / "tasks"
+                source_dir.mkdir(parents=True)
+                for item_id in _mock_ids(89):
+                    (source_dir / item_id).mkdir()
+                output_dir = root / f"split-{name}"
+                manifest = materialize_terminalbench_split(
+                    source_dir,
+                    output_dir,
+                    seed=42,
+                    source_revision="pinned-revision",
+                )
+                digests.append(manifest["semantic_sha256"])
+                ordered_ids.append(
+                    {
+                        split: _load_split_ids(output_dir, split)
+                        for split in ("train", "val", "test")
+                    }
+                )
+                manifest_paths.append(manifest["source"]["path"])
+
+            self.assertEqual(digests[0], digests[1])
+            self.assertEqual(ordered_ids[0], ordered_ids[1])
+            self.assertNotEqual(manifest_paths[0], manifest_paths[1])
+
+    def test_dataloader_preserves_legacy_v1_manifest_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            output_dir = root / "split"
+            source_path = root / "source.json"
+            _write_json_source(source_path, _mock_ids(10))
+            materialize_terminalbench_split(source_path, output_dir)
+            manifest_path = output_dir / "split_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["schema_version"] = 1
+            manifest.pop("semantic_identity")
+            manifest.pop("semantic_sha256")
+            manifest.pop("legacy_provenance", None)
+            content = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode()
+            manifest_path.write_bytes(content)
+            (output_dir / "split_manifest.sha256").write_text(
+                f"{hashlib.sha256(content).hexdigest()}  split_manifest.json\n",
+                encoding="utf-8",
+            )
+
+            loader = TerminalBenchDataLoader(split_dir=str(output_dir))
+            loader.setup({})
+
+            self.assertEqual(
+                sum(len(loader.get_split_items(name)) for name in ("train", "val", "test")),
+                10,
+            )
+
+    def test_committed_portable_split_has_stable_identity(self) -> None:
+        split_dir = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "terminalbench"
+            / "splits"
+            / "v2.1-s42"
+        )
+        manifest = json.loads(
+            (split_dir / "split_manifest.json").read_text(encoding="utf-8")
+        )
+
+        loader = TerminalBenchDataLoader(split_dir=str(split_dir))
+        loader.setup({})
+
+        self.assertEqual(
+            manifest["semantic_sha256"],
+            "bd36fe2f37a67cd2b46149263522d833166d3a4d036c8e9af082e742ad017500",
+        )
+        self.assertEqual(manifest["counts"], {"train": 9, "val": 9, "test": 71})
 
     def test_directory_task_source_uses_immediate_child_names_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

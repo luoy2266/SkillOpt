@@ -18,7 +18,9 @@ from skillopt.envs.terminalbench.dataloader import (
     MANIFEST_FILENAME,
     MANIFEST_SCHEMA_VERSION,
     SPLIT_ITEMS_FILENAME,
+    build_semantic_split_identity,
     normalize_manifest_item,
+    semantic_split_sha256,
     task_ids_sha256,
     validate_split_partition,
     validate_task_id,
@@ -300,12 +302,20 @@ def materialize_terminalbench_split(
     all_ids = validate_split_partition(splits)
     counts = {split_name: len(splits[split_name]) for split_name in SPLIT_NAMES}
     item_fields = sorted({field for split in splits.values() for item in split for field in item})
+    semantic_identity = build_semantic_split_identity(
+        splits,
+        terminalbench_revision=source_provenance.get("revision", ""),
+        seed=seed,
+    )
+    semantic_sha256 = semantic_split_sha256(semantic_identity)
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "benchmark": BENCHMARK_NAME,
         "benchmark_version": BENCHMARK_VERSION,
         "manifest_type": "id_split",
         "materializer": "scripts/materialize_terminalbench_split.py",
+        "semantic_identity": semantic_identity,
+        "semantic_sha256": semantic_sha256,
         "source": source_provenance,
         "input": {
             "count": len(items),
@@ -327,8 +337,7 @@ def materialize_terminalbench_split(
     }
     manifest_content = _json_bytes(manifest)
     _write_bytes(output_dir / MANIFEST_FILENAME, manifest_content)
-    manifest_sha256 = _sha256_bytes(manifest_content)
-    checksum_content = f"{manifest_sha256}  {MANIFEST_FILENAME}\n".encode("utf-8")
+    checksum_content = f"{semantic_sha256}  semantic_split_identity\n".encode("utf-8")
     _write_bytes(output_dir / MANIFEST_CHECKSUM_FILENAME, checksum_content)
     return manifest
 

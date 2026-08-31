@@ -1,0 +1,29 @@
+job_name: terminalbench-formal
+jobs_dir: __JOBS_DIR__
+n_attempts: 1
+n_concurrent_trials: __CONCURRENCY__
+retry:
+  max_retries: 0
+environment:
+  type: docker
+  env:
+    SKILLOPT_TERMINALBENCH_CACHE_ROOT: /opt/skillopt-cache/terminal-bench-v2.1
+    HF_HOME: /opt/skillopt-cache/terminal-bench-v2.1/huggingface
+    HF_HUB_CACHE: /opt/skillopt-cache/terminal-bench-v2.1/huggingface/hub
+    HF_DATASETS_CACHE: /opt/skillopt-cache/terminal-bench-v2.1/huggingface/datasets
+  mounts:
+    - type: bind
+      source: __CACHE_ROOT__
+      target: /opt/skillopt-cache/terminal-bench-v2.1
+      read_only: true
+      bind:
+        create_host_path: false
+agents:
+  - name: terminus-2
+    model_name: deepseek/deepseek-v4-flash
+    skills: []
+    kwargs:
+      reasoning_effort: max
+      max_turns: 250
+datasets:
+  - path: __TASKS_PATH__

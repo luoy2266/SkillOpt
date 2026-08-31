@@ -258,6 +258,10 @@ class TerminalBenchConfigTests(unittest.TestCase):
             ["properties"]["target_max_turns"]["const"],
             250,
         )
+        self.assertEqual(
+            schema["properties"]["execution"]["properties"]["n_concurrent_trials"],
+            {"type": "integer", "minimum": 1},
+        )
         docker_required = (
             schema["properties"]["execution"]["properties"]["docker"]["required"]
         )
@@ -272,6 +276,9 @@ class TerminalBenchConfigTests(unittest.TestCase):
         systemd_probe = (
             self.repository_root / "scripts/probe_terminalbench_formal_systemd.sh"
         ).read_text(encoding="utf-8")
+        systemd_runner = (
+            self.repository_root / "scripts/run_terminalbench_formal_systemd.sh"
+        ).read_text(encoding="utf-8")
 
         self.assertIn(
             'export OPTIMIZER_OPENAI_COMPATIBLE_API_KEY="$DEEPSEEK_API_KEY"',
@@ -279,8 +286,9 @@ class TerminalBenchConfigTests(unittest.TestCase):
         )
         self.assertIn('export http_proxy="$HTTP_PROXY"', wrapper)
         self.assertIn('export no_proxy="$NO_PROXY"', wrapper)
-        self.assertIn("/usr/bin/sg docker -c", systemd_probe)
-        self.assertIn("EnvironmentFile=", systemd_probe)
+        self.assertIn("run_terminalbench_formal_systemd.sh", systemd_probe)
+        self.assertIn("/usr/bin/sg docker -c", systemd_runner)
+        self.assertIn("EnvironmentFile=", systemd_runner)
 
     def test_formal_manifest_redaction_preserves_nonsecret_token_limits(self) -> None:
         redacted = _redact_config(

@@ -1,0 +1,215 @@
+[
+  {
+    "id": "mteb-retrieve"
+  },
+  {
+    "id": "password-recovery"
+  },
+  {
+    "id": "modernize-scientific-stack"
+  },
+  {
+    "id": "tune-mjcf"
+  },
+  {
+    "id": "rstan-to-pystan"
+  },
+  {
+    "id": "prove-plus-comm"
+  },
+  {
+    "id": "git-multibranch"
+  },
+  {
+    "id": "chess-best-move"
+  },
+  {
+    "id": "install-windows-3.11"
+  },
+  {
+    "id": "raman-fitting"
+  },
+  {
+    "id": "fix-ocaml-gc"
+  },
+  {
+    "id": "mailman"
+  },
+  {
+    "id": "portfolio-optimization"
+  },
+  {
+    "id": "llm-inference-batching-scheduler"
+  },
+  {
+    "id": "large-scale-text-editing"
+  },
+  {
+    "id": "winning-avg-corewars"
+  },
+  {
+    "id": "mcmc-sampling-stan"
+  },
+  {
+    "id": "sanitize-git-repo"
+  },
+  {
+    "id": "compile-compcert"
+  },
+  {
+    "id": "hf-model-inference"
+  },
+  {
+    "id": "extract-moves-from-video"
+  },
+  {
+    "id": "db-wal-recovery"
+  },
+  {
+    "id": "pytorch-model-cli"
+  },
+  {
+    "id": "qemu-startup"
+  },
+  {
+    "id": "multi-source-data-merger"
+  },
+  {
+    "id": "cancel-async-tasks"
+  },
+  {
+    "id": "gpt2-codegolf"
+  },
+  {
+    "id": "regex-log"
+  },
+  {
+    "id": "break-filter-js-from-html"
+  },
+  {
+    "id": "crack-7z-hash"
+  },
+  {
+    "id": "kv-store-grpc"
+  },
+  {
+    "id": "mteb-leaderboard"
+  },
+  {
+    "id": "extract-elf"
+  },
+  {
+    "id": "schemelike-metacircular-eval"
+  },
+  {
+    "id": "feal-differential-cryptanalysis"
+  },
+  {
+    "id": "build-pov-ray"
+  },
+  {
+    "id": "caffe-cifar-10"
+  },
+  {
+    "id": "polyglot-rust-c"
+  },
+  {
+    "id": "model-extraction-relu-logits"
+  },
+  {
+    "id": "write-compressor"
+  },
+  {
+    "id": "circuit-fibsqrt"
+  },
+  {
+    "id": "torch-tensor-parallelism"
+  },
+  {
+    "id": "dna-insert"
+  },
+  {
+    "id": "reshard-c4-data"
+  },
+  {
+    "id": "make-doom-for-mips"
+  },
+  {
+    "id": "dna-assembly"
+  },
+  {
+    "id": "adaptive-rejection-sampler"
+  },
+  {
+    "id": "video-processing"
+  },
+  {
+    "id": "path-tracing"
+  },
+  {
+    "id": "train-fasttext"
+  },
+  {
+    "id": "nginx-request-logging"
+  },
+  {
+    "id": "feal-linear-cryptanalysis"
+  },
+  {
+    "id": "sparql-university"
+  },
+  {
+    "id": "pypi-server"
+  },
+  {
+    "id": "fix-git"
+  },
+  {
+    "id": "financial-document-processor"
+  },
+  {
+    "id": "sqlite-db-truncate"
+  },
+  {
+    "id": "vulnerable-secret"
+  },
+  {
+    "id": "build-pmars"
+  },
+  {
+    "id": "openssl-selfsigned-cert"
+  },
+  {
+    "id": "sam-cell-seg"
+  },
+  {
+    "id": "code-from-image"
+  },
+  {
+    "id": "query-optimize"
+  },
+  {
+    "id": "configure-git-webserver"
+  },
+  {
+    "id": "custom-memory-heap-crash"
+  },
+  {
+    "id": "fix-code-vulnerability"
+  },
+  {
+    "id": "gcode-to-text"
+  },
+  {
+    "id": "headless-terminal"
+  },
+  {
+    "id": "build-cython-ext"
+  },
+  {
+    "id": "constraints-scheduling"
+  },
+  {
+    "id": "torch-pipeline-parallelism"
+  }
+]

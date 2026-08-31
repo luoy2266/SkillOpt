@@ -86,11 +86,19 @@ def collect_probe_status(
         else "FAIL"
     )
 
+    proxy_configured = any(
+        env.get(name)
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+    )
     for upper, lower in (("HTTP_PROXY", "http_proxy"), ("HTTPS_PROXY", "https_proxy")):
-        statuses[upper] = "SET" if env.get(upper) else "MISSING"
-        statuses[lower] = (
-            "PASS" if env.get(upper) and env.get(lower) == env.get(upper) else "FAIL"
-        )
+        if proxy_configured:
+            statuses[upper] = "SET" if env.get(upper) else "MISSING"
+            statuses[lower] = (
+                "PASS" if env.get(upper) and env.get(lower) == env.get(upper) else "FAIL"
+            )
+        else:
+            statuses[upper] = "UNSET"
+            statuses[lower] = "PASS" if not env.get(lower) else "FAIL"
 
     no_proxy = env.get("NO_PROXY", "")
     lower_no_proxy = env.get("no_proxy", "")

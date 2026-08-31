@@ -4,12 +4,19 @@ Phase 1 represents the Terminal-Bench split as lightweight, replaceable task-ID
 files. It does not include task solutions, verifier tests, Dockerfiles, or full
 task payloads, and it does not invoke Harbor, Docker, or a model API.
 
-## Source status
+## Frozen delivery split
 
-As of 2026-08-29, this repository does not contain an authoritative source for
-the 89 Terminal-Bench v2.1 task IDs. No task IDs are therefore checked in or
-invented for the formal split. The project owner must materialize the released
-split from a real Terminal-Bench v2.1 task source.
+The reviewed 89-task `9/9/71` partition is checked in at
+`configs/terminalbench/splits/v2.1-s42/`. It contains task IDs only and is
+pinned to Terminal-Bench revision
+`7131e4375048a0e408a8fb404b5f499d726b695b`. Its portable semantic SHA-256 is:
+
+```text
+bd36fe2f37a67cd2b46149263522d833166d3a4d036c8e9af082e742ad017500
+```
+
+Server bootstrap may copy this directory below `SKILLOPT_RUNTIME_ROOT/splits/`
+without changing its identity. It must not rerandomize or replace the task IDs.
 
 The materializer accepts any of these external sources:
 
@@ -88,11 +95,13 @@ rollout result, and prediction directory.
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Phase 1 schema version; currently `1`. |
+| `schema_version` | `2` for the host-independent portable manifest. |
 | `benchmark` | Fixed to `terminal-bench`. |
 | `benchmark_version` | Fixed to `2.1`. |
 | `manifest_type` | Fixed to `id_split`. |
 | `materializer` | Repository script that created the files. |
+| `semantic_identity` | Stable schema, benchmark/version, pinned Terminal-Bench revision, seed, and ordered IDs for all three splits. |
+| `semantic_sha256` | SHA-256 of canonical JSON for `semantic_identity`. |
 | `source` | Resolved source path, source format, source checksum and scope, ID field, retained metadata fields, and optional pinned revision. |
 | `input` | Input task count and SHA-256 of the canonical sorted task-ID set. |
 | `split` | Ratio, deterministic seed, shuffle algorithm, and count-allocation rule. |
@@ -101,11 +110,19 @@ rollout result, and prediction directory.
 | `files` | Relative path, count, and SHA-256 for each split file. |
 | `notes` | Data-minimization reminders. |
 
-`split_manifest.sha256` contains the SHA-256 of the exact
-`split_manifest.json` bytes. `TerminalBenchDataLoader` validates that checksum,
-all split-file checksums and counts, the task-ID set checksum, item fields, ID
-safety, and uniqueness across all three splits before applying the inherited
-per-split `limit`.
+`split_manifest.sha256` contains the portable semantic SHA-256, not a hash of
+the whole manifest bytes. Absolute source checkout paths remain useful runtime
+provenance, but they do not affect split identity. `TerminalBenchDataLoader`
+validates the semantic identity, all split-file checksums and counts, the
+task-ID set checksum, item fields, ID safety, and uniqueness across all three
+splits before applying the inherited per-split `limit`.
+
+Legacy schema-v1 materializations remain valid only through their original
+whole-manifest checksum path. The previously completed local formal experiment
+retains legacy SHA-256
+`8fa19aa350b90a7c39c3cde56f87a93bbfcb450586b416dc700c4c0b35827894`;
+the loader and formal preflight do not silently reinterpret it as a portable
+semantic hash.
 
 ## Count allocation
 

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from scripts.terminalbench_formal_identity import experiment_lock_name
 
 
 class TerminalBenchFormalWrapperTests(unittest.TestCase):
@@ -47,9 +50,10 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
 
         logger = (
             "from pathlib import Path\n"
-            "import json, os, sys\n"
+            "import json, os, sys, time\n"
             "with Path(os.environ['FORMAL_WRAPPER_CALL_LOG']).open('a', encoding='utf-8') as handle:\n"
             "    handle.write(json.dumps({'command': Path(sys.argv[0]).name, 'argv': sys.argv[1:]}) + '\\n')\n"
+            "time.sleep(float(os.environ.get('FAKE_COMMAND_SLEEP', '0')))\n"
         )
         (scripts_dir / "preflight_terminalbench.py").write_text(
             logger
@@ -83,19 +87,30 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
         harbor.chmod(0o755)
 
     def _write_test_wrapper(self) -> Path:
-        source = (
-            self.repository_root / "scripts" / "run_terminalbench_formal_stage.sh"
-        ).read_text(encoding="utf-8")
-        source = source.replace(
-            'PROJECT_ROOT="/home/yunl/projects/SkillOpt"',
-            f'PROJECT_ROOT="{self.project_root}"',
+        scripts_dir = self.project_root / "scripts"
+        wrapper = scripts_dir / "run_terminalbench_formal_stage.sh"
+        wrapper.write_text(
+            (self.repository_root / "scripts" / wrapper.name).read_text(encoding="utf-8"),
+            encoding="utf-8",
         )
-        wrapper = self.root / "run-terminalbench-formal-stage.sh"
-        wrapper.write_text(source, encoding="utf-8")
         wrapper.chmod(0o755)
+        identity = scripts_dir / "terminalbench_formal_identity.py"
+        identity.write_text(
+            (
+                self.repository_root
+                / "scripts"
+                / "terminalbench_formal_identity.py"
+            ).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
         return wrapper
 
-    def _environment(self, *, preflight_exit: int = 0) -> dict[str, str]:
+    def _environment(
+        self,
+        *,
+        preflight_exit: int = 0,
+        overrides: dict[str, str | None] | None = None,
+    ) -> dict[str, str]:
         environment = dict(os.environ)
         environment.update(
             {
@@ -103,11 +118,16 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
                 "SKILLOPT_FORMAL_HEAD": "a" * 40,
                 "SKILLOPT_FORMAL_DOCKER_MODE": "sg",
                 "SKILLOPT_FORMAL_EXPERIMENT_ID": "experiment-001",
+                "SKILLOPT_RUNTIME_ROOT": str(self.root / "runtime"),
                 "SKILLOPT_FORMAL_ROOT": str(self.formal_root),
+                "SKILLOPT_TBENCH_CONCURRENCY": "1",
                 "DEEPSEEK_API_KEY": "test-secret-not-logged",
                 "HTTP_PROXY": "http://proxy.example",
                 "HTTPS_PROXY": "http://proxy.example",
+                "http_proxy": "http://proxy.example",
+                "https_proxy": "http://proxy.example",
                 "NO_PROXY": "localhost,127.0.0.1,::1",
+                "no_proxy": "localhost,127.0.0.1,::1",
                 "TERMINALBENCH_ROOT": str(self.root / "terminal-bench"),
                 "TERMINALBENCH_SPLIT_DIR": str(self.root / "split"),
                 "TERMINALBENCH_HARBOR_BASE_CONFIG": str(self.root / "harbor.yaml"),
@@ -116,9 +136,20 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
                 "FAKE_PREFLIGHT_EXIT": str(preflight_exit),
             }
         )
+        for name, value in (overrides or {}).items():
+            if value is None:
+                environment.pop(name, None)
+            else:
+                environment[name] = value
         return environment
 
-    def _run(self, stage: str, *, preflight_exit: int = 0) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self,
+        stage: str,
+        *,
+        preflight_exit: int = 0,
+        overrides: dict[str, str | None] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         if self.call_log.exists():
             self.call_log.unlink()
         return subprocess.run(
@@ -128,7 +159,10 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             check=False,
             timeout=10,
-            env=self._environment(preflight_exit=preflight_exit),
+            env=self._environment(
+                preflight_exit=preflight_exit,
+                overrides=overrides,
+            ),
         )
 
     def _calls(self) -> list[dict[str, object]]:
@@ -186,6 +220,10 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
             [call["command"] for call in self._calls()],
             ["preflight_terminalbench.py", "train.py"],
         )
+        preflight_args = self._calls()[0]["argv"]
+        train_args = self._calls()[1]["argv"]
+        self.assertEqual(self._argument(preflight_args, "--concurrency"), "1")
+        self.assertIn("env.n_concurrent_trials=1", train_args)
 
     def test_training_stops_when_preflight_fails(self) -> None:
         completed = self._run("training", preflight_exit=19)
@@ -215,6 +253,129 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
                     [call["command"] for call in self._calls()],
                     ["preflight_terminalbench.py"],
                 )
+
+    def test_project_and_runtime_roots_are_portable(self) -> None:
+        runtime_root = self.root / "runtime-portable"
+        completed = self._run(
+            "preflight",
+            overrides={
+                "SKILLOPT_RUNTIME_ROOT": str(runtime_root),
+                "SKILLOPT_FORMAL_ROOT": None,
+                "TERMINALBENCH_ROOT": None,
+                "TERMINALBENCH_SPLIT_DIR": None,
+                "TERMINALBENCH_HARBOR_BASE_CONFIG": None,
+                "TERMINALBENCH_FORMAL_CACHE_ROOT": None,
+            },
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        arguments = self._calls()[0]["argv"]
+        self.assertEqual(
+            self._argument(arguments, "--config"),
+            str(self.project_root / "configs" / "terminalbench" / "formal.yaml"),
+        )
+        self.assertEqual(
+            self._argument(arguments, "--split-dir"),
+            str(runtime_root / "splits" / "tbench-v2.1-s42"),
+        )
+        self.assertEqual(
+            self._argument(arguments, "--cache-root"),
+            str(runtime_root / "cache" / "terminal-bench-v2.1"),
+        )
+
+    def test_granular_runtime_overrides_take_precedence(self) -> None:
+        split_dir = self.root / "explicit-split"
+        completed = self._run(
+            "preflight",
+            overrides={
+                "SKILLOPT_RUNTIME_ROOT": str(self.root / "runtime-other"),
+                "TERMINALBENCH_SPLIT_DIR": str(split_dir),
+            },
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            self._argument(self._calls()[0]["argv"], "--split-dir"),
+            str(split_dir),
+        )
+
+    def test_direct_mode_without_proxy_is_allowed(self) -> None:
+        completed = self._run(
+            "preflight",
+            overrides={name: None for name in (
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "NO_PROXY",
+                "no_proxy",
+            )},
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_partial_proxy_is_rejected(self) -> None:
+        completed = self._run(
+            "preflight",
+            overrides={
+                "HTTP_PROXY": "http://proxy.example",
+                "HTTPS_PROXY": None,
+                "http_proxy": None,
+                "https_proxy": None,
+            },
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("must both be set", completed.stderr)
+
+    def test_server_concurrency_is_passed_to_preflight_and_training(self) -> None:
+        completed = self._run(
+            "training",
+            overrides={"SKILLOPT_TBENCH_CONCURRENCY": "16"},
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        calls = self._calls()
+        self.assertEqual(self._argument(calls[0]["argv"], "--concurrency"), "16")
+        self.assertIn("env.n_concurrent_trials=16", calls[1]["argv"])
+
+    def test_invalid_concurrency_is_rejected(self) -> None:
+        for value in ("0", "-1", "not-an-integer"):
+            with self.subTest(value=value):
+                completed = self._run(
+                    "preflight",
+                    overrides={"SKILLOPT_TBENCH_CONCURRENCY": value},
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn("positive integer", completed.stderr)
+
+    def test_same_experiment_execution_lock_is_nonblocking(self) -> None:
+        lock_root = self.root / "runtime" / "locks"
+        lock_root.mkdir(parents=True)
+        lock_path = lock_root / experiment_lock_name("experiment-001")
+        with lock_path.open("w", encoding="utf-8") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            completed = self._run("training")
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("already running", completed.stderr)
+        self.assertEqual(self._calls(), [])
+
+    def test_different_experiments_use_independent_locks(self) -> None:
+        lock_root = self.root / "runtime" / "locks"
+        lock_root.mkdir(parents=True)
+        lock_path = lock_root / experiment_lock_name("experiment-001")
+        with lock_path.open("w", encoding="utf-8") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            completed = self._run(
+                "training",
+                overrides={
+                    "SKILLOPT_FORMAL_EXPERIMENT_ID": "experiment-002",
+                    "SKILLOPT_FORMAL_ROOT": str(self.root / "formal" / "experiment-002"),
+                },
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
 
 if __name__ == "__main__":

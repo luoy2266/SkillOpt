@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import importlib.metadata
+import ipaddress
 import json
 import os
 import re
@@ -30,7 +31,8 @@ from skillopt.envs.terminalbench.skill_pack import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_BRANCH = "terminalbench-v2.1"
 EXPECTED_TBENCH_HEAD = "7131e4375048a0e408a8fb404b5f499d726b695b"
-EXPECTED_SPLIT_SHA256 = "8fa19aa350b90a7c39c3cde56f87a93bbfcb450586b416dc700c4c0b35827894"
+EXPECTED_LEGACY_SPLIT_SHA256 = "8fa19aa350b90a7c39c3cde56f87a93bbfcb450586b416dc700c4c0b35827894"
+EXPECTED_PORTABLE_SPLIT_SHA256 = "bd36fe2f37a67cd2b46149263522d833166d3a4d036c8e9af082e742ad017500"
 EXPECTED_COUNTS = {"train": 9, "val": 9, "test": 71}
 EXPECTED_HARBOR_VERSION = "0.20.0"
 EXPECTED_TERMINUS_VERSION = "2.0.0"
@@ -271,7 +273,7 @@ def _validate_terminus_version(version: str) -> None:
         )
 
 
-def _split_state(split_dir: Path) -> tuple[dict[str, list[str]], str]:
+def _split_state(split_dir: Path) -> tuple[dict[str, list[str]], str, str]:
     loader = TerminalBenchDataLoader(
         split_dir=str(split_dir),
         split_mode="split_dir",
@@ -291,17 +293,45 @@ def _split_state(split_dir: Path) -> tuple[dict[str, list[str]], str]:
         raise PreflightFailure("split contains cross-split overlap")
     if len(set().union(*sets.values())) != 89:
         raise PreflightFailure("split does not contain exactly 89 unique tasks")
-    manifest = split_dir / "split_manifest.json"
-    digest = _sha256(manifest)
-    if digest != EXPECTED_SPLIT_SHA256:
+    manifest_path = split_dir / "split_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    schema_version = manifest.get("schema_version")
+    if schema_version == 1:
+        digest = _sha256(manifest_path)
+        identity_type = "legacy_materialized_manifest_sha256"
+        expected_digest = EXPECTED_LEGACY_SPLIT_SHA256
+    elif schema_version == 2:
+        digest = str(manifest.get("semantic_sha256") or "")
+        identity_type = "portable_semantic_sha256"
+        expected_digest = EXPECTED_PORTABLE_SPLIT_SHA256
+    else:
+        raise PreflightFailure(f"unsupported split manifest schema: {schema_version!r}")
+    if digest != expected_digest:
         raise PreflightFailure(
-            f"split manifest SHA-256 mismatch: expected {EXPECTED_SPLIT_SHA256}, got {digest}"
+            f"split {identity_type} mismatch: expected {expected_digest}, got {digest}"
         )
-    return task_ids, digest
+    return task_ids, digest, identity_type
 
 
-def _validate_formal_config(config_path: Path) -> dict[str, Any]:
-    flat = flatten_config(load_config(str(config_path)))
+def _positive_concurrency(value: Any) -> int:
+    if isinstance(value, bool):
+        raise PreflightFailure("concurrency must be a positive integer")
+    try:
+        concurrency = int(value)
+    except (TypeError, ValueError) as exc:
+        raise PreflightFailure("concurrency must be a positive integer") from exc
+    if concurrency <= 0 or str(value).strip() != str(concurrency):
+        raise PreflightFailure("concurrency must be a positive integer")
+    return concurrency
+
+
+def _validate_formal_config(config_path: Path, *, concurrency: int) -> dict[str, Any]:
+    flat = flatten_config(
+        load_config(
+            str(config_path),
+            overrides=[f"env.n_concurrent_trials={concurrency}"],
+        )
+    )
     expected = {
         "env": "terminalbench",
         "optimizer_backend": "openai_compatible",
@@ -325,7 +355,7 @@ def _validate_formal_config(config_path: Path) -> dict[str, Any]:
         "test_env_num": 0,
         "eval_test": False,
         "limit": 0,
-        "n_concurrent_trials": 1,
+        "n_concurrent_trials": concurrency,
     }
     mismatches = {
         key: {"expected": value, "actual": flat.get(key)}
@@ -350,6 +380,8 @@ def _validate_harbor_config(
     *,
     tasks_path: Path,
     cache_root: Path,
+    concurrency: int,
+    proxy_configured: bool,
 ) -> dict[str, Any]:
     config = load_harbor_base_config(path)
     if len(config.get("agents") or []) != 1:
@@ -359,8 +391,11 @@ def _validate_harbor_config(
     agent = config["agents"][0]
     if config.get("n_attempts", 1) != 1:
         raise PreflightFailure("Harbor n_attempts must equal 1")
-    if config.get("n_concurrent_trials", 1) != 1:
-        raise PreflightFailure("Harbor n_concurrent_trials must equal 1")
+    if config.get("n_concurrent_trials", 1) != concurrency:
+        raise PreflightFailure(
+            "Harbor n_concurrent_trials mismatch: "
+            f"expected {concurrency}, got {config.get('n_concurrent_trials', 1)}"
+        )
     if (config.get("retry") or {}).get("max_retries", 0) != 0:
         raise PreflightFailure("Harbor retry.max_retries must equal 0")
     if agent.get("name") != EXPECTED_AGENT:
@@ -381,12 +416,22 @@ def _validate_harbor_config(
     environment = config.get("environment") or {}
     if environment.get("type") != "docker":
         raise PreflightFailure("Harbor environment must be Docker")
-    proxy_env = environment.get("env") or {}
-    for name in REQUIRED_PROXY_NAMES:
-        if proxy_env.get(name) != f"${{{name}}}":
-            raise PreflightFailure(f"Harbor environment.env must reference ${{{name}}}")
+    environment_env = environment.get("env") or {}
+    present_proxy_names = {name for name in REQUIRED_PROXY_NAMES if name in environment_env}
+    if proxy_configured:
+        if present_proxy_names != set(REQUIRED_PROXY_NAMES):
+            raise PreflightFailure(
+                "Harbor environment.env must contain the complete proxy contract"
+            )
+        for name in REQUIRED_PROXY_NAMES:
+            if environment_env.get(name) != f"${{{name}}}":
+                raise PreflightFailure(f"Harbor environment.env must reference ${{{name}}}")
+    elif present_proxy_names:
+        raise PreflightFailure(
+            "Harbor environment.env must omit proxy references in direct mode"
+        )
     for name, expected in EXPECTED_CACHE_ENV.items():
-        if proxy_env.get(name) != expected:
+        if environment_env.get(name) != expected:
             raise PreflightFailure(
                 f"Harbor environment.env cache path mismatch for {name}"
             )
@@ -546,17 +591,28 @@ def _proxy_entries(value: str) -> set[str]:
     return {entry.strip().casefold() for entry in value.split(",") if entry.strip()}
 
 
-def _validate_proxy_environment(docker_local_addresses: list[str]) -> None:
-    missing = [name for name in REQUIRED_PROXY_NAMES if not os.environ.get(name)]
-    if missing:
-        raise PreflightFailure(f"missing proxy environment variable names: {missing}")
-    if os.environ["HTTP_PROXY"] != os.environ["http_proxy"]:
-        raise PreflightFailure("HTTP_PROXY and http_proxy differ")
-    if os.environ["HTTPS_PROXY"] != os.environ["https_proxy"]:
-        raise PreflightFailure("HTTPS_PROXY and https_proxy differ")
-    if os.environ["NO_PROXY"] != os.environ["no_proxy"]:
+def _validate_proxy_environment(docker_local_addresses: list[str]) -> bool:
+    proxy_values = {
+        name: os.environ.get(name, "")
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+    }
+    proxy_configured = any(proxy_values.values())
+    if proxy_configured:
+        missing = [name for name, value in proxy_values.items() if not value]
+        if missing:
+            raise PreflightFailure(f"incomplete proxy environment: missing {missing}")
+        if proxy_values["HTTP_PROXY"] != proxy_values["http_proxy"]:
+            raise PreflightFailure("HTTP_PROXY and http_proxy differ")
+        if proxy_values["HTTPS_PROXY"] != proxy_values["https_proxy"]:
+            raise PreflightFailure("HTTPS_PROXY and https_proxy differ")
+
+    no_proxy = os.environ.get("NO_PROXY", "")
+    lower_no_proxy = os.environ.get("no_proxy", "")
+    if not no_proxy or not lower_no_proxy:
+        raise PreflightFailure("NO_PROXY and no_proxy must contain local exclusions")
+    if no_proxy != lower_no_proxy:
         raise PreflightFailure("NO_PROXY and no_proxy differ")
-    entries = _proxy_entries(os.environ["NO_PROXY"])
+    entries = _proxy_entries(no_proxy)
     required = {
         "localhost",
         "127.0.0.1",
@@ -567,11 +623,169 @@ def _validate_proxy_environment(docker_local_addresses: list[str]) -> None:
     missing_entries = sorted(required - entries)
     if missing_entries:
         raise PreflightFailure(f"NO_PROXY/no_proxy missing required local entries: {missing_entries}")
+    return proxy_configured
 
 
-def _docker_state(tasks_path: Path, *, concurrency: int) -> dict[str, Any]:
+def _disk_state(path: Path) -> dict[str, Any]:
+    requested = path.expanduser().resolve(strict=False)
+    probe = requested
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    if not probe.exists():
+        raise PreflightFailure(f"unable to resolve filesystem for {requested}")
+    usage = shutil.disk_usage(probe)
+    return {
+        "requested_path": str(requested),
+        "filesystem_probe_path": str(probe.resolve()),
+        "total_bytes": usage.total,
+        "free_bytes": usage.free,
+    }
+
+
+def _memory_state() -> dict[str, int | str]:
+    values: dict[str, int] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            name, raw_value = line.split(":", 1)
+            if name in {"MemTotal", "MemAvailable"}:
+                values[name] = int(raw_value.strip().split()[0]) * 1024
+    except (OSError, ValueError):
+        return {"status": "UNRESOLVED"}
+    if set(values) != {"MemTotal", "MemAvailable"}:
+        return {"status": "UNRESOLVED"}
+    return {
+        "status": "RECORDED",
+        "total_bytes": values["MemTotal"],
+        "available_bytes": values["MemAvailable"],
+    }
+
+
+def _gpu_inventory() -> dict[str, Any]:
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        return {"status": "NOT_DETECTED", "devices": []}
+    try:
+        output = _run([
+            executable,
+            "--query-gpu=index,name,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
+    except PreflightFailure as exc:
+        return {"status": "UNRESOLVED", "devices": [], "error": str(exc)}
+    devices = []
+    for line in output.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 3:
+            return {"status": "UNRESOLVED", "devices": []}
+        try:
+            devices.append(
+                {"index": int(parts[0]), "name": parts[1], "memory_mib": int(parts[2])}
+            )
+        except ValueError:
+            return {"status": "UNRESOLVED", "devices": []}
+    return {"status": "RECORDED", "devices": devices}
+
+
+def _address_pool_state(
+    raw_pools: Any,
+    *,
+    network_subnets: list[str],
+    concurrency: int,
+) -> dict[str, Any]:
+    state = {
+        "status": "MISSING",
+        "configured": False,
+        "pools": [],
+        "total_subnet_capacity": None,
+        "consumed_subnet_capacity": None,
+        "remaining_subnet_capacity": None,
+    }
+    if raw_pools is None:
+        if concurrency > 1:
+            raise PreflightFailure(
+                "Docker default-address-pools must be configured when concurrency > 1"
+            )
+        return state
+    if not isinstance(raw_pools, list) or not raw_pools:
+        if concurrency > 1:
+            raise PreflightFailure("Docker default-address-pools is invalid or empty")
+        state["status"] = "INVALID"
+        return state
+
+    parsed_pools: list[tuple[ipaddress._BaseNetwork, int]] = []
+    try:
+        for index, entry in enumerate(raw_pools):
+            if not isinstance(entry, dict):
+                raise ValueError(f"entry {index} is not an object")
+            base = ipaddress.ip_network(str(entry["base"]), strict=True)
+            child_prefix = int(entry["size"])
+            if not base.prefixlen <= child_prefix <= base.max_prefixlen:
+                raise ValueError(f"entry {index} has invalid size")
+            for previous, _ in parsed_pools:
+                if previous.version == base.version and previous.overlaps(base):
+                    raise ValueError("address pools overlap")
+            parsed_pools.append((base, child_prefix))
+    except (KeyError, TypeError, ValueError) as exc:
+        if concurrency > 1:
+            raise PreflightFailure(f"Docker default-address-pools is invalid: {exc}") from exc
+        state["status"] = "INVALID"
+        return state
+
+    total_capacity = sum(1 << (child - base.prefixlen) for base, child in parsed_pools)
+    consumed_capacity = 0
+    for subnet_text in sorted(set(network_subnets)):
+        try:
+            subnet = ipaddress.ip_network(subnet_text, strict=False)
+        except ValueError as exc:
+            if concurrency > 1:
+                raise PreflightFailure(
+                    f"unable to classify Docker network subnet {subnet_text!r}"
+                ) from exc
+            continue
+        containing = [
+            (base, child)
+            for base, child in parsed_pools
+            if subnet.version == base.version and subnet.subnet_of(base)
+        ]
+        if not containing:
+            continue
+        base, child_prefix = containing[0]
+        consumed_capacity += (
+            1 << (child_prefix - subnet.prefixlen)
+            if subnet.prefixlen < child_prefix
+            else 1
+        )
+    remaining_capacity = max(0, total_capacity - consumed_capacity)
+    if concurrency > 1 and remaining_capacity < concurrency:
+        raise PreflightFailure(
+            "insufficient Docker address-pool capacity: "
+            f"remaining={remaining_capacity}, requested={concurrency}"
+        )
+    return {
+        "status": "CONFIGURED",
+        "configured": True,
+        "pools": [
+            {"base": str(base), "size": child}
+            for base, child in parsed_pools
+        ],
+        "total_subnet_capacity": total_capacity,
+        "consumed_subnet_capacity": consumed_capacity,
+        "remaining_subnet_capacity": remaining_capacity,
+    }
+
+
+def _docker_state(
+    tasks_path: Path,
+    *,
+    cache_root: Path,
+    output_root: Path,
+    concurrency: int,
+    daemon_config: Path = Path("/etc/docker/daemon.json"),
+) -> dict[str, Any]:
     engine = _run(["docker", "version", "--format", "{{.Server.Version}}"])
-    _run(["docker", "info", "--format", "{{.DockerRootDir}}"])
+    docker_root = Path(
+        _run(["docker", "info", "--format", "{{.DockerRootDir}}"])
+    ).expanduser().resolve()
     network_ids = _run(["docker", "network", "ls", "-q"]).splitlines()
     networks = (
         json.loads(_run(["docker", "network", "inspect", *network_ids]))
@@ -595,33 +809,73 @@ def _docker_state(tasks_path: Path, *, concurrency: int) -> dict[str, Any]:
             continue
         task = tomllib.loads(task_toml.read_text(encoding="utf-8"))
         max_storage_mb = max(max_storage_mb, int(task["environment"]["storage_mb"]))
-    free_bytes = shutil.disk_usage(tasks_path).free
+    disks = {
+        "docker_root": _disk_state(docker_root),
+        "runtime_outputs": _disk_state(output_root),
+        "dataset": _disk_state(tasks_path),
+        "cache": _disk_state(cache_root),
+    }
+    free_bytes = disks["docker_root"]["free_bytes"]
     required_bytes = max_storage_mb * 1024 * 1024 * concurrency
     if free_bytes < required_bytes:
         raise PreflightFailure(
             f"insufficient storage: free={free_bytes}, required={required_bytes}"
         )
-    daemon_config = Path("/etc/docker/daemon.json")
-    address_pools_configured = False
+    raw_address_pools: Any = None
     if daemon_config.is_file():
         try:
-            address_pools_configured = bool(
-                json.loads(daemon_config.read_text(encoding="utf-8")).get("default-address-pools")
-            )
-        except (OSError, json.JSONDecodeError):
-            address_pools_configured = False
-    if concurrency > 1 and not address_pools_configured:
-        raise PreflightFailure(
-            "Docker default-address-pools must be configured when concurrency > 1"
-        )
+            raw_address_pools = json.loads(
+                daemon_config.read_text(encoding="utf-8")
+            ).get("default-address-pools")
+        except (OSError, json.JSONDecodeError) as exc:
+            if concurrency > 1:
+                raise PreflightFailure(
+                    f"unable to read Docker default-address-pools: {exc}"
+                ) from exc
+    address_pool_state = _address_pool_state(
+        raw_address_pools,
+        network_subnets=network_subnets,
+        concurrency=concurrency,
+    )
     return {
         "engine": engine,
+        "docker_root_dir": str(docker_root),
         "network_subnets": sorted(set(network_subnets)),
         "network_gateways": sorted(set(network_gateways)),
         "free_bytes": free_bytes,
         "minimum_declared_bytes": required_bytes,
-        "default_address_pools_configured": address_pools_configured,
-        "docker_default_address_pools_configured": address_pools_configured,
+        "default_address_pools_configured": address_pool_state["configured"],
+        "docker_default_address_pools_configured": address_pool_state["configured"],
+        "address_pools": address_pool_state,
+        "disks": disks,
+    }
+
+
+def _resource_state(
+    *,
+    docker_state: dict[str, Any],
+    harbor_config: dict[str, Any],
+    concurrency: int,
+) -> dict[str, Any]:
+    environment = harbor_config.get("environment") or {}
+    harbor_resources = {
+        name: environment[name]
+        for name in ("override_cpus", "override_memory_mb", "override_storage_mb")
+        if name in environment
+    }
+    return {
+        "configured_concurrency": concurrency,
+        "logical_cpus": os.cpu_count(),
+        "memory": _memory_state(),
+        "gpus": _gpu_inventory(),
+        "disks": docker_state["disks"],
+        "harbor_environment_resources": harbor_resources,
+        "sufficiency": {
+            "storage": "PASS",
+            "cpu": "UNRESOLVED",
+            "ram": "UNRESOLVED",
+            "gpu": "UNRESOLVED",
+        },
     }
 
 
@@ -737,12 +991,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skill", required=True)
     parser.add_argument("--training-output")
     parser.add_argument("--expected-skillopt-head", required=True)
+    parser.add_argument("--concurrency", required=True)
     parser.add_argument("--require-persistent-runtime", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    concurrency = _positive_concurrency(args.concurrency)
     config_path = Path(args.config).expanduser().resolve()
     tbench_root = Path(args.tbench_root).expanduser().resolve()
     tasks_path = tbench_root / "tasks"
@@ -776,14 +1032,35 @@ def main() -> None:
     if not tasks_path.is_dir():
         raise PreflightFailure(f"Terminal-Bench tasks directory is missing: {tasks_path}")
 
-    flat_config = _validate_formal_config(config_path)
-    task_ids, split_manifest_sha256 = _split_state(split_dir)
+    flat_config = _validate_formal_config(config_path, concurrency=concurrency)
+    task_ids, split_manifest_sha256, split_identity_type = _split_state(split_dir)
     cache_state = _validate_cache_contract(cache_root)
+    docker_state = _docker_state(
+        tasks_path,
+        cache_root=cache_root,
+        output_root=output_root,
+        concurrency=concurrency,
+    )
+    proxy_configured = _validate_proxy_environment(
+        docker_state["network_subnets"] + docker_state["network_gateways"]
+    )
     harbor_config = _validate_harbor_config(
         harbor_config_path,
         tasks_path=tasks_path,
         cache_root=cache_root,
+        concurrency=concurrency,
+        proxy_configured=proxy_configured,
     )
+    config_concurrency = _positive_concurrency(flat_config.get("n_concurrent_trials"))
+    harbor_concurrency = _positive_concurrency(
+        harbor_config.get("n_concurrent_trials", 1)
+    )
+    if len({concurrency, config_concurrency, harbor_concurrency}) != 1:
+        raise PreflightFailure(
+            "formal concurrency mismatch: "
+            f"requested={concurrency}, SkillOpt={config_concurrency}, "
+            f"Harbor={harbor_concurrency}"
+        )
     timeout_contract = _task_timeout_contract(tasks_path, task_ids)
     harbor_version = _harbor_version(args.harbor_executable)
     if harbor_version != EXPECTED_HARBOR_VERSION:
@@ -800,12 +1077,13 @@ def main() -> None:
     if os.environ.get("OPTIMIZER_OPENAI_COMPATIBLE_BASE_URL") != EXPECTED_OPTIMIZER_ENDPOINT:
         raise PreflightFailure("optimizer OpenAI-compatible endpoint mismatch")
 
-    docker_state = _docker_state(tasks_path, concurrency=1)
-    _validate_proxy_environment(
-        docker_state["network_subnets"] + docker_state["network_gateways"]
-    )
     if args.require_persistent_runtime:
         _validate_persistent_runtime()
+    resources = _resource_state(
+        docker_state=docker_state,
+        harbor_config=harbor_config,
+        concurrency=concurrency,
+    )
 
     skill = _skill_state(
         skill_path,
@@ -816,6 +1094,7 @@ def main() -> None:
         f"env.split_dir={split_dir}",
         f"env.harbor_base_config={harbor_config_path}",
         f"env.out_root={output_root}",
+        f"env.n_concurrent_trials={concurrency}",
     ]
     manifest = {
         "schema_version": "skillopt-terminalbench-formal-v1",
@@ -837,6 +1116,7 @@ def main() -> None:
             "tasks_path": str(tasks_path),
             "split_dir": str(split_dir),
             "split_manifest_sha256": split_manifest_sha256,
+            "split_identity_type": split_identity_type,
             "split_manifest": json.loads(
                 (split_dir / "split_manifest.json").read_text(encoding="utf-8")
             ),
@@ -873,6 +1153,7 @@ def main() -> None:
             "harbor_max_retries": int((harbor_config.get("retry") or {}).get("max_retries", 0)),
             "timeouts": timeout_contract,
             "docker": docker_state,
+            "resources": resources,
         },
         "skill": skill,
         "artifacts": {
@@ -887,7 +1168,15 @@ def main() -> None:
             "OPTIMIZER_OPENAI_COMPATIBLE_API_KEY",
             "OPTIMIZER_OPENAI_COMPATIBLE_BASE_URL",
             "TERMINALBENCH_FORMAL_CACHE_ROOT",
-            *REQUIRED_PROXY_NAMES,
+            "SKILLOPT_RUNTIME_ROOT",
+            "SKILLOPT_TBENCH_CONCURRENCY",
+            "NO_PROXY",
+            "no_proxy",
+            *(
+                ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+                if proxy_configured
+                else ()
+            ),
         ],
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

@@ -57,6 +57,7 @@
         "tasks_path",
         "split_dir",
         "split_manifest_sha256",
+        "split_identity_type",
         "split_manifest",
         "counts",
         "task_ids"
@@ -66,6 +67,12 @@
         "tasks_path": {"type": "string"},
         "split_dir": {"type": "string"},
         "split_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "split_identity_type": {
+          "enum": [
+            "legacy_materialized_manifest_sha256",
+            "portable_semantic_sha256"
+          ]
+        },
         "split_manifest": {"type": "object"},
         "counts": {
           "type": "object",
@@ -193,7 +200,8 @@
         "n_concurrent_trials",
         "harbor_max_retries",
         "timeouts",
-        "docker"
+        "docker",
+        "resources"
       ],
       "properties": {
         "config_path": {"type": "string"},
@@ -205,7 +213,7 @@
         "harbor_base_config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "harbor_base_config_text": {"type": "string"},
         "n_attempts": {"const": 1},
-        "n_concurrent_trials": {"const": 1},
+        "n_concurrent_trials": {"type": "integer", "minimum": 1},
         "harbor_max_retries": {"const": 0},
         "timeouts": {
           "type": "object",
@@ -239,15 +247,19 @@
           "additionalProperties": false,
           "required": [
             "engine",
+            "docker_root_dir",
             "network_subnets",
             "network_gateways",
             "free_bytes",
             "minimum_declared_bytes",
             "default_address_pools_configured",
-            "docker_default_address_pools_configured"
+            "docker_default_address_pools_configured",
+            "address_pools",
+            "disks"
           ],
           "properties": {
             "engine": {"type": "string"},
+            "docker_root_dir": {"type": "string"},
             "network_subnets": {
               "type": "array",
               "items": {"type": "string"},
@@ -261,7 +273,31 @@
             "free_bytes": {"type": "integer", "minimum": 0},
             "minimum_declared_bytes": {"type": "integer", "minimum": 0},
             "default_address_pools_configured": {"type": "boolean"},
-            "docker_default_address_pools_configured": {"type": "boolean"}
+            "docker_default_address_pools_configured": {"type": "boolean"},
+            "address_pools": {"type": "object"},
+            "disks": {"type": "object"}
+          }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "configured_concurrency",
+            "logical_cpus",
+            "memory",
+            "gpus",
+            "disks",
+            "harbor_environment_resources",
+            "sufficiency"
+          ],
+          "properties": {
+            "configured_concurrency": {"type": "integer", "minimum": 1},
+            "logical_cpus": {"type": ["integer", "null"], "minimum": 1},
+            "memory": {"type": "object"},
+            "gpus": {"type": "object"},
+            "disks": {"type": "object"},
+            "harbor_environment_resources": {"type": "object"},
+            "sufficiency": {"type": "object"}
           }
         }
       }

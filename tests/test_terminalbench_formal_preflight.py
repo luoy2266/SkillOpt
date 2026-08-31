@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -19,10 +20,15 @@ from scripts.preflight_terminalbench import (
     EXPECTED_TERMINUS_CLASS_MODULE,
     EXPECTED_TERMINUS_CLASS_NAME,
     PreflightFailure,
+    _address_pool_state,
+    _positive_concurrency,
+    _resource_state,
     _sha256_tree,
     _terminus_version,
     _validate_cache_contract,
+    _validate_formal_config,
     _validate_harbor_config,
+    _validate_proxy_environment,
     _validate_terminus_version,
 )
 from scripts.probe_terminalbench_formal_service import collect_probe_status
@@ -357,26 +363,37 @@ class TerminalBenchFormalPreflightTests(unittest.TestCase):
         )
         return cache_root
 
-    def _write_harbor_config(self, cache_root: Path, *, read_only: bool = True) -> Path:
+    def _write_harbor_config(
+        self,
+        cache_root: Path,
+        *,
+        read_only: bool = True,
+        concurrency: int = 1,
+        proxy_configured: bool = True,
+    ) -> Path:
         tasks_path = self.root / "tasks"
         tasks_path.mkdir(exist_ok=True)
         config = {
             "job_name": "formal-base",
             "jobs_dir": str(self.root / "jobs"),
             "n_attempts": 1,
-            "n_concurrent_trials": 1,
+            "n_concurrent_trials": concurrency,
             "retry": {"max_retries": 0},
             "environment": {
                 "type": "docker",
                 "env": {
-                    **{name: f"${{{name}}}" for name in (
-                        "HTTP_PROXY",
-                        "HTTPS_PROXY",
-                        "http_proxy",
-                        "https_proxy",
-                        "NO_PROXY",
-                        "no_proxy",
-                    )},
+                    **(
+                        {name: f"${{{name}}}" for name in (
+                            "HTTP_PROXY",
+                            "HTTPS_PROXY",
+                            "http_proxy",
+                            "https_proxy",
+                            "NO_PROXY",
+                            "no_proxy",
+                        )}
+                        if proxy_configured
+                        else {}
+                    ),
                     **EXPECTED_CACHE_ENV,
                 },
                 "mounts": [
@@ -457,6 +474,8 @@ class TerminalBenchFormalPreflightTests(unittest.TestCase):
             config_path,
             tasks_path=tasks_path,
             cache_root=cache_root,
+            concurrency=1,
+            proxy_configured=True,
         )
 
         self.assertTrue(config["environment"]["mounts"][0]["read_only"])
@@ -467,7 +486,131 @@ class TerminalBenchFormalPreflightTests(unittest.TestCase):
                 invalid_path,
                 tasks_path=tasks_path,
                 cache_root=cache_root,
+                concurrency=1,
+                proxy_configured=True,
             )
+
+    def test_formal_config_accepts_operator_concurrency_override(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "configs/terminalbench/formal.yaml"
+
+        flat = _validate_formal_config(config_path, concurrency=16)
+
+        self.assertEqual(flat["n_concurrent_trials"], 16)
+
+    def test_concurrency_parser_rejects_non_positive_values(self) -> None:
+        self.assertEqual(_positive_concurrency("16"), 16)
+        for value in (0, -1, "nope", True):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(PreflightFailure, "positive integer"):
+                    _positive_concurrency(value)
+
+    def test_harbor_concurrency_mismatch_blocks(self) -> None:
+        cache_root = self._write_cache()
+        config_path = self._write_harbor_config(cache_root, concurrency=8)
+
+        with self.assertRaisesRegex(PreflightFailure, "expected 16, got 8"):
+            _validate_harbor_config(
+                config_path,
+                tasks_path=self.root / "tasks",
+                cache_root=cache_root,
+                concurrency=16,
+                proxy_configured=True,
+            )
+
+    def test_harbor_direct_mode_omits_proxy_references(self) -> None:
+        cache_root = self._write_cache()
+        config_path = self._write_harbor_config(
+            cache_root,
+            proxy_configured=False,
+        )
+
+        config = _validate_harbor_config(
+            config_path,
+            tasks_path=self.root / "tasks",
+            cache_root=cache_root,
+            concurrency=1,
+            proxy_configured=False,
+        )
+
+        self.assertNotIn("HTTP_PROXY", config["environment"]["env"])
+
+    def test_proxy_validation_supports_direct_and_configured_modes(self) -> None:
+        no_proxy = "localhost,127.0.0.1,127.0.0.11,::1,172.18.0.0/16,172.18.0.1"
+        direct = {"NO_PROXY": no_proxy, "no_proxy": no_proxy}
+        with patch.dict(os.environ, direct, clear=True):
+            self.assertFalse(
+                _validate_proxy_environment(["172.18.0.0/16", "172.18.0.1"])
+            )
+
+        configured = {
+            **direct,
+            "HTTP_PROXY": "http://proxy.example",
+            "http_proxy": "http://proxy.example",
+            "HTTPS_PROXY": "http://proxy.example",
+            "https_proxy": "http://proxy.example",
+        }
+        with patch.dict(os.environ, configured, clear=True):
+            self.assertTrue(
+                _validate_proxy_environment(["172.18.0.0/16", "172.18.0.1"])
+            )
+
+        partial = {**direct, "HTTP_PROXY": "http://proxy.example"}
+        with patch.dict(os.environ, partial, clear=True):
+            with self.assertRaisesRegex(PreflightFailure, "incomplete proxy"):
+                _validate_proxy_environment([])
+
+    def test_address_pool_policy_depends_on_concurrency_and_capacity(self) -> None:
+        state = _address_pool_state(
+            None,
+            network_subnets=[],
+            concurrency=1,
+        )
+        self.assertEqual(state["status"], "MISSING")
+
+        with self.assertRaisesRegex(PreflightFailure, "must be configured"):
+            _address_pool_state(None, network_subnets=[], concurrency=2)
+
+        pools = [{"base": "172.30.0.0/24", "size": 28}]
+        capacity = _address_pool_state(
+            pools,
+            network_subnets=["172.30.0.0/28"],
+            concurrency=15,
+        )
+        self.assertEqual(capacity["remaining_subnet_capacity"], 15)
+        with self.assertRaisesRegex(PreflightFailure, "insufficient"):
+            _address_pool_state(
+                pools,
+                network_subnets=["172.30.0.0/28"],
+                concurrency=16,
+            )
+
+    def test_resource_snapshot_records_host_and_harbor_settings(self) -> None:
+        docker_state = {
+            "disks": {
+                name: {"free_bytes": 100}
+                for name in ("docker_root", "runtime_outputs", "dataset", "cache")
+            }
+        }
+        harbor_config = {
+            "environment": {
+                "override_cpus": 4,
+                "override_memory_mb": 8192,
+                "override_storage_mb": 20480,
+            }
+        }
+        with patch("scripts.preflight_terminalbench._memory_state", return_value={"status": "RECORDED"}), patch(
+            "scripts.preflight_terminalbench._gpu_inventory",
+            return_value={"status": "NOT_DETECTED", "devices": []},
+        ), patch("scripts.preflight_terminalbench.os.cpu_count", return_value=32):
+            state = _resource_state(
+                docker_state=docker_state,
+                harbor_config=harbor_config,
+                concurrency=16,
+            )
+
+        self.assertEqual(state["configured_concurrency"], 16)
+        self.assertEqual(state["logical_cpus"], 32)
+        self.assertEqual(state["harbor_environment_resources"]["override_cpus"], 4)
 
     def test_service_probe_is_secret_safe_and_checks_credential_bridge(self) -> None:
         cache_root = self._write_cache()
