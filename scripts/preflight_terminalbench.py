@@ -10,6 +10,7 @@ import importlib.metadata
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,8 @@ EXPECTED_SPLIT_SHA256 = "8fa19aa350b90a7c39c3cde56f87a93bbfcb450586b416dc700c4c0
 EXPECTED_COUNTS = {"train": 9, "val": 9, "test": 71}
 EXPECTED_HARBOR_VERSION = "0.20.0"
 EXPECTED_TERMINUS_VERSION = "2.0.0"
+EXPECTED_TERMINUS_CLASS_MODULE = "harbor.agents.terminus_2.terminus_2"
+EXPECTED_TERMINUS_CLASS_NAME = "Terminus2"
 EXPECTED_TARGET_MODEL = "deepseek/deepseek-v4-flash"
 EXPECTED_OPTIMIZER_MODEL = "deepseek-v4-flash"
 EXPECTED_UNDERLYING_MODEL = "DeepSeek-V4-Flash-0731"
@@ -80,6 +83,23 @@ REQUIRED_PROXY_NAMES = (
     "NO_PROXY",
     "no_proxy",
 )
+TERMINUS_DISCOVERY_TIMEOUT_SEC = 30
+TERMINUS_DISCOVERY_SCRIPT = """
+import json
+
+from harbor.agents.factory import AgentFactory
+from harbor.models.agent.name import AgentName
+
+agent_class = AgentFactory.get_agent_class(AgentName.TERMINUS_2)
+agent = object.__new__(agent_class)
+print(json.dumps({
+    "registry_name": AgentName.TERMINUS_2.value,
+    "agent_name": agent.name(),
+    "class_module": agent_class.__module__,
+    "class_name": agent_class.__name__,
+    "version": agent.version(),
+}))
+"""
 
 
 class PreflightFailure(RuntimeError):
@@ -170,24 +190,85 @@ def _harbor_version(executable: str) -> str:
 
 
 def _terminus_version(executable: str) -> str:
-    launcher = Path(shutil.which(executable) or executable).resolve()
-    first_line = launcher.read_text(encoding="utf-8").splitlines()[0]
+    located = shutil.which(executable)
+    if located is None:
+        raise PreflightFailure(f"Harbor executable not found: {executable}")
+    try:
+        launcher = Path(located).resolve(strict=True)
+        first_line = launcher.read_text(encoding="utf-8").splitlines()[0]
+    except (IndexError, OSError, UnicodeError) as exc:
+        raise PreflightFailure(f"Unable to read Harbor launcher: {located}") from exc
     if not first_line.startswith("#!"):
         raise PreflightFailure(f"Harbor launcher has no Python shebang: {launcher}")
-    interpreter = Path(first_line[2:]).resolve()
-    roots = sorted((interpreter.parent.parent / "lib").glob("python*/site-packages"))
-    for root in roots:
-        source = root / "harbor/agents/terminus_2/terminus_2.py"
-        if not source.is_file():
-            continue
-        match = re.search(
-            r"def version\(self\).*?return\s+[\"']([^\"']+)[\"']",
-            source.read_text(encoding="utf-8"),
-            flags=re.DOTALL,
+    try:
+        shebang = shlex.split(first_line[2:].strip())
+    except ValueError as exc:
+        raise PreflightFailure(f"Harbor launcher has an invalid shebang: {launcher}") from exc
+    if len(shebang) != 1:
+        raise PreflightFailure(f"Harbor launcher has an invalid Python shebang: {launcher}")
+    interpreter = Path(shebang[0])
+    if not interpreter.is_absolute() or not interpreter.name.casefold().startswith(
+        "python"
+    ):
+        raise PreflightFailure(f"Harbor launcher has a non-Python shebang: {launcher}")
+    if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
+        raise PreflightFailure(
+            f"Harbor launcher Python interpreter is unavailable: {interpreter}"
         )
-        if match:
-            return match.group(1)
-    raise PreflightFailure("Unable to locate the installed Terminus-2 version")
+
+    try:
+        completed = subprocess.run(
+            [str(interpreter), "-c", TERMINUS_DISCOVERY_SCRIPT],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            shell=False,
+            timeout=TERMINUS_DISCOVERY_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PreflightFailure("Terminus-2 runtime version discovery timed out") from exc
+    except OSError as exc:
+        raise PreflightFailure(
+            "Unable to execute the Harbor Python interpreter for Terminus-2 discovery"
+        ) from exc
+    if completed.returncode != 0:
+        raise PreflightFailure(
+            "Terminus-2 runtime version discovery subprocess failed: "
+            f"exit status {completed.returncode}"
+        )
+    try:
+        identity = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise PreflightFailure(
+            "Terminus-2 runtime version discovery returned malformed JSON"
+        ) from exc
+    if not isinstance(identity, dict):
+        raise PreflightFailure(
+            "Terminus-2 runtime version discovery returned an invalid identity"
+        )
+    expected_identity = {
+        "registry_name": EXPECTED_AGENT,
+        "agent_name": EXPECTED_AGENT,
+        "class_module": EXPECTED_TERMINUS_CLASS_MODULE,
+        "class_name": EXPECTED_TERMINUS_CLASS_NAME,
+    }
+    for field, expected in expected_identity.items():
+        if identity.get(field) != expected:
+            raise PreflightFailure(
+                f"Terminus-2 runtime identity mismatch for {field}"
+            )
+    version = identity.get("version")
+    if not isinstance(version, str) or not version.strip():
+        raise PreflightFailure("Terminus-2 runtime version is empty")
+    return version.strip()
+
+
+def _validate_terminus_version(version: str) -> None:
+    if version != EXPECTED_TERMINUS_VERSION:
+        raise PreflightFailure(
+            f"Terminus-2 version mismatch: expected {EXPECTED_TERMINUS_VERSION}, got {version}"
+        )
 
 
 def _split_state(split_dir: Path) -> tuple[dict[str, list[str]], str]:
@@ -710,10 +791,7 @@ def main() -> None:
             f"Harbor version mismatch: expected {EXPECTED_HARBOR_VERSION}, got {harbor_version}"
         )
     terminus_version = _terminus_version(args.harbor_executable)
-    if terminus_version != EXPECTED_TERMINUS_VERSION:
-        raise PreflightFailure(
-            f"Terminus-2 version mismatch: expected {EXPECTED_TERMINUS_VERSION}, got {terminus_version}"
-        )
+    _validate_terminus_version(terminus_version)
 
     if not os.environ.get("DEEPSEEK_API_KEY"):
         raise PreflightFailure("DEEPSEEK_API_KEY is missing")

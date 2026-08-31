@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -12,10 +16,14 @@ from scripts.preflight_terminalbench import (
     EXPECTED_CACHE_CONTAINER_ROOT,
     EXPECTED_CACHE_ENV,
     EXPECTED_HIGH_RISK_ASSETS,
+    EXPECTED_TERMINUS_CLASS_MODULE,
+    EXPECTED_TERMINUS_CLASS_NAME,
     PreflightFailure,
     _sha256_tree,
+    _terminus_version,
     _validate_cache_contract,
     _validate_harbor_config,
+    _validate_terminus_version,
 )
 from scripts.probe_terminalbench_formal_service import collect_probe_status
 
@@ -27,6 +35,287 @@ class TerminalBenchFormalPreflightTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def _write_fake_harbor_tool(
+        self,
+        *,
+        version: str = "2.0.0",
+        registry_error: bool = False,
+        version_error: bool = False,
+        wrong_class: bool = False,
+    ) -> tuple[Path, Path]:
+        tool_root = Path(tempfile.mkdtemp(prefix="harbor-tool-", dir=self.root))
+        bin_dir = tool_root / "bin"
+        bin_dir.mkdir()
+        base_python = Path("/usr/bin/python3")
+        python_details = subprocess.run(
+            [
+                str(base_python),
+                "-c",
+                "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}'); "
+                "print(sys.base_prefix); print(sys.executable)",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.splitlines()
+        python_version, base_prefix, base_executable = python_details
+        interpreter = bin_dir / "python"
+        interpreter.symlink_to(base_python)
+        (tool_root / "pyvenv.cfg").write_text(
+            f"home = {Path(base_executable).parent}\n"
+            "include-system-site-packages = false\n"
+            f"version = {python_version}\n"
+            f"executable = {base_executable}\n",
+            encoding="utf-8",
+        )
+        site_packages = (
+            tool_root / "lib" / f"python{python_version}" / "site-packages"
+        )
+
+        def write_package(relative_path: str, content: str = "") -> None:
+            path = site_packages / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+
+        write_package("harbor/__init__.py")
+        write_package("harbor/agents/__init__.py")
+        write_package("harbor/agents/terminus_2/__init__.py")
+        version_body = (
+            "raise RuntimeError('version failure')"
+            if version_error
+            else f"return {version!r}"
+        )
+        write_package(
+            "harbor/agents/terminus_2/terminus_2.py",
+            "class Terminus2:\n"
+            "    @staticmethod\n"
+            "    def name():\n"
+            "        return 'terminus-2'\n"
+            "    def version(self):\n"
+            f"        {version_body}\n",
+        )
+        if registry_error:
+            factory_body = (
+                "class AgentFactory:\n"
+                "    @classmethod\n"
+                "    def get_agent_class(cls, name):\n"
+                "        raise RuntimeError('registry failure')\n"
+            )
+        elif wrong_class:
+            factory_body = (
+                "class Decoy:\n"
+                "    @staticmethod\n"
+                "    def name():\n"
+                "        return 'terminus-2'\n"
+                "    def version(self):\n"
+                f"        return {version!r}\n"
+                "class AgentFactory:\n"
+                "    @classmethod\n"
+                "    def get_agent_class(cls, name):\n"
+                "        return Decoy\n"
+            )
+        else:
+            factory_body = (
+                "from harbor.agents.terminus_2.terminus_2 import Terminus2\n"
+                "class AgentFactory:\n"
+                "    @classmethod\n"
+                "    def get_agent_class(cls, name):\n"
+                "        return Terminus2\n"
+            )
+        write_package("harbor/agents/factory.py", factory_body)
+        write_package("harbor/models/__init__.py")
+        write_package("harbor/models/agent/__init__.py")
+        write_package(
+            "harbor/models/agent/name.py",
+            "from enum import Enum\n"
+            "class AgentName(str, Enum):\n"
+            "    TERMINUS_2 = 'terminus-2'\n",
+        )
+        launcher = bin_dir / "harbor"
+        launcher.write_text(
+            f"#!{interpreter}\nraise SystemExit(97)\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        self.assertEqual(Path(base_prefix), Path(base_executable).parent.parent)
+        return launcher, interpreter
+
+    @staticmethod
+    def _runtime_identity(version: str = "2.0.0") -> str:
+        return json.dumps(
+            {
+                "registry_name": "terminus-2",
+                "agent_name": "terminus-2",
+                "class_module": EXPECTED_TERMINUS_CLASS_MODULE,
+                "class_name": EXPECTED_TERMINUS_CLASS_NAME,
+                "version": version,
+            }
+        )
+
+    def test_terminus_discovery_uses_uv_shebang_interpreter_and_registry(self) -> None:
+        launcher, interpreter = self._write_fake_harbor_tool()
+
+        version = _terminus_version(str(launcher))
+
+        self.assertEqual(version, "2.0.0")
+        self.assertTrue(interpreter.is_symlink())
+        self.assertEqual(interpreter.readlink(), Path("/usr/bin/python3"))
+
+    def test_terminus_discovery_subprocess_preserves_interpreter_symlink(self) -> None:
+        launcher, interpreter = self._write_fake_harbor_tool()
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=self._runtime_identity(),
+            stderr="",
+        )
+
+        with patch(
+            "scripts.preflight_terminalbench.subprocess.run", return_value=completed
+        ) as run:
+            self.assertEqual(_terminus_version(str(launcher)), "2.0.0")
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], str(interpreter))
+        self.assertNotEqual(command[0], str(interpreter.resolve()))
+        self.assertFalse(run.call_args.kwargs["shell"])
+        self.assertNotIn("env", run.call_args.kwargs)
+
+    def test_terminus_discovery_isolated_from_current_python_modules(self) -> None:
+        launcher, _ = self._write_fake_harbor_tool()
+        decoy = types.ModuleType("harbor")
+        decoy.__file__ = "/decoy/current-python/harbor.py"
+
+        with patch.dict(sys.modules, {"harbor": decoy}):
+            version = _terminus_version(str(launcher))
+
+        self.assertEqual(version, "2.0.0")
+
+    def test_terminus_discovery_does_not_require_standalone_distribution(self) -> None:
+        launcher, interpreter = self._write_fake_harbor_tool()
+        metadata_probe = subprocess.run(
+            [
+                str(interpreter),
+                "-c",
+                "from importlib import metadata; "
+                "\ntry:\n metadata.version('terminus-2')"
+                "\nexcept metadata.PackageNotFoundError:\n print('NOT_INSTALLED')",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+
+        self.assertEqual(metadata_probe.stdout.strip(), "NOT_INSTALLED")
+        self.assertEqual(_terminus_version(str(launcher)), "2.0.0")
+
+    def test_terminus_discovery_rejects_missing_harbor(self) -> None:
+        with self.assertRaisesRegex(PreflightFailure, "Harbor executable not found"):
+            _terminus_version(str(self.root / "missing-harbor"))
+
+    def test_terminus_discovery_rejects_invalid_launcher(self) -> None:
+        launcher = self.root / "harbor"
+        launcher.write_text("not a Python launcher\n", encoding="utf-8")
+        launcher.chmod(0o755)
+
+        with self.assertRaisesRegex(PreflightFailure, "no Python shebang"):
+            _terminus_version(str(launcher))
+
+    def test_terminus_discovery_rejects_non_python_shebang(self) -> None:
+        launcher = self.root / "harbor"
+        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+        launcher.chmod(0o755)
+
+        with self.assertRaisesRegex(PreflightFailure, "non-Python shebang"):
+            _terminus_version(str(launcher))
+
+    def test_terminus_discovery_rejects_missing_shebang_interpreter(self) -> None:
+        launcher = self.root / "harbor"
+        launcher.write_text(
+            f"#!{self.root / 'missing' / 'python'}\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+
+        with self.assertRaisesRegex(PreflightFailure, "interpreter is unavailable"):
+            _terminus_version(str(launcher))
+
+    def test_terminus_discovery_rejects_subprocess_failure_without_source_fallback(
+        self,
+    ) -> None:
+        tool_root = self.root / "tool"
+        interpreter = tool_root / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+        interpreter.chmod(0o755)
+        launcher = tool_root / "bin" / "harbor"
+        launcher.write_text(f"#!{interpreter}\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        source = (
+            tool_root
+            / "lib/python3.12/site-packages/harbor/agents/terminus_2/terminus_2.py"
+        )
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "class Terminus2:\n"
+            "    def version(self):\n"
+            "        return '2.0.0'\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(PreflightFailure, "exit status 9"):
+            _terminus_version(str(launcher))
+
+    def test_terminus_discovery_rejects_timeout(self) -> None:
+        launcher, _ = self._write_fake_harbor_tool()
+
+        with patch(
+            "scripts.preflight_terminalbench.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["python"], 30),
+        ):
+            with self.assertRaisesRegex(PreflightFailure, "timed out"):
+                _terminus_version(str(launcher))
+
+    def test_terminus_discovery_rejects_malformed_json(self) -> None:
+        launcher, _ = self._write_fake_harbor_tool()
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="not-json", stderr=""
+        )
+
+        with patch(
+            "scripts.preflight_terminalbench.subprocess.run", return_value=completed
+        ):
+            with self.assertRaisesRegex(PreflightFailure, "malformed JSON"):
+                _terminus_version(str(launcher))
+
+    def test_terminus_discovery_rejects_empty_version(self) -> None:
+        launcher, _ = self._write_fake_harbor_tool(version="")
+
+        with self.assertRaisesRegex(PreflightFailure, "version is empty"):
+            _terminus_version(str(launcher))
+
+    def test_terminus_discovery_rejects_registry_failure(self) -> None:
+        launcher, _ = self._write_fake_harbor_tool(registry_error=True)
+
+        with self.assertRaisesRegex(PreflightFailure, "subprocess failed"):
+            _terminus_version(str(launcher))
+
+    def test_terminus_discovery_rejects_version_method_failure(self) -> None:
+        launcher, _ = self._write_fake_harbor_tool(version_error=True)
+
+        with self.assertRaisesRegex(PreflightFailure, "subprocess failed"):
+            _terminus_version(str(launcher))
+
+    def test_terminus_discovery_rejects_wrong_registry_class_identity(self) -> None:
+        launcher, _ = self._write_fake_harbor_tool(wrong_class=True)
+
+        with self.assertRaisesRegex(PreflightFailure, "class_module"):
+            _terminus_version(str(launcher))
+
+    def test_terminus_expected_version_mismatch_blocks(self) -> None:
+        with self.assertRaisesRegex(PreflightFailure, "expected 2.0.0, got 2.0.1"):
+            _validate_terminus_version("2.0.1")
 
     def _write_cache(self, *, omit: str | None = None, bad_hash: str | None = None) -> Path:
         cache_root = self.root / "cache"
