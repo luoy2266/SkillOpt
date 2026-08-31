@@ -4,7 +4,19 @@ This runbook freezes the post-Phase-9 formal experiment contract. It does not
 authorize automatic retries, task replacement, test-set tuning, or adaptive
 changes to the optimizer completion limit.
 
+> **Canonical server deployment instructions:**
+> `docs/terminalbench/SERVER_RUNBOOK.md` is authoritative for fresh-checkout
+> server preparation and execution. This document preserves protocol/design
+> history and may include explicitly marked historical local validation
+> examples; those examples are not portable server deployment commands.
+
 ## Frozen identities
+
+**Historical local validation example — not a portable server deployment
+command.** The following checkout and split paths record the Phase 9/10
+developer-machine experiment that established the original frozen provenance.
+Fresh servers must instead derive paths from `SKILLOPT_RUNTIME_ROOT` and use
+the portable split documented in `SERVER_RUNBOOK.md`.
 
 - SkillOpt branch: `terminalbench-v2.1`.
 - Terminal-Bench checkout:
@@ -199,7 +211,7 @@ tool caches happen to exist:
 
 ```text
 host root:
-/home/yunl/projects/skillopt-runtime/cache/terminal-bench-v2.1
+${SKILLOPT_RUNTIME_ROOT}/cache/terminal-bench-v2.1
 
 container root:
 /opt/skillopt-cache/terminal-bench-v2.1
@@ -240,7 +252,7 @@ operational overlay in the external base config:
 environment:
   mounts:
     - type: bind
-      source: /home/yunl/projects/skillopt-runtime/cache/terminal-bench-v2.1
+      source: ${SKILLOPT_RUNTIME_ROOT}/cache/terminal-bench-v2.1
       target: /opt/skillopt-cache/terminal-bench-v2.1
       read_only: true
       bind:
@@ -288,26 +300,18 @@ values.
 
 ## Persistent execution
 
-Do not run formal work in an SSH-attached shell. Recommended user unit:
+Do not run formal work in an SSH-attached shell. The canonical portable entry
+point resolves `PROJECT_ROOT` from the checked-out script location, reads the
+configured EnvironmentFile, derives the experiment-scoped unit name, and
+enters the Docker group through the reviewed wrapper:
 
-```ini
-[Unit]
-Description=SkillOpt Terminal-Bench formal training
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=exec
-WorkingDirectory=/home/yunl/projects/SkillOpt
-EnvironmentFile=%h/.config/skillopt/terminalbench-formal.env
-ExecStart=/usr/bin/sg docker -c 'SKILLOPT_FORMAL_DOCKER_MODE=sg exec /home/yunl/projects/SkillOpt/scripts/run_terminalbench_formal_stage.sh training'
-Restart=no
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
+```bash
+scripts/run_terminalbench_formal_systemd.sh training
 ```
+
+Do not copy a developer-machine `WorkingDirectory` or absolute `ExecStart`
+path into a server unit. See `docs/terminalbench/SERVER_RUNBOOK.md` for the
+complete stage sequence and EnvironmentFile preparation.
 
 The operator must have an active user manager and non-interactive Docker
 access. Establish group membership first:
@@ -331,7 +335,7 @@ non-interactively.
 Before any formal stage, run the one-shot probe:
 
 ```bash
-/home/yunl/projects/SkillOpt/scripts/probe_terminalbench_formal_systemd.sh
+scripts/run_terminalbench_formal_systemd.sh probe
 ```
 
 It uses the same EnvironmentFile, systemd user manager, `sg docker`, wrapper,
