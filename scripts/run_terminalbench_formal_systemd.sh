@@ -30,8 +30,25 @@ if [[ ! -x "$PYTHON" ]]; then
   exit 2
 fi
 
-EXPERIMENT_ID="$($PYTHON "$SCRIPT_DIR/terminalbench_formal_identity.py" \
-  env-value --file "$ENV_FILE" --name SKILLOPT_FORMAL_EXPERIMENT_ID)"
+read_required_environment_value() {
+  local name="$1"
+  local value
+  if ! value="$($PYTHON "$SCRIPT_DIR/terminalbench_formal_identity.py" \
+    env-value --file "$ENV_FILE" --name "$name" 2>/dev/null)" \
+    || [[ -z "$value" || "$value" == \<*\> ]]; then
+    echo "OPERATOR INPUT REQUIRED: $name" >&2
+    exit 2
+  fi
+  printf '%s' "$value"
+}
+
+EXPERIMENT_ID="$(read_required_environment_value SKILLOPT_FORMAL_EXPERIMENT_ID)"
+read_required_environment_value SKILLOPT_RUNTIME_ROOT >/dev/null
+CONCURRENCY="$(read_required_environment_value SKILLOPT_TBENCH_CONCURRENCY)"
+if [[ ! "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
+  echo "SKILLOPT_TBENCH_CONCURRENCY must be a positive integer" >&2
+  exit 2
+fi
 UNIT="$($PYTHON "$SCRIPT_DIR/terminalbench_formal_identity.py" \
   unit-name --experiment-id "$EXPERIMENT_ID" --stage "$STAGE")"
 printf -v WRAPPER_COMMAND 'SKILLOPT_FORMAL_DOCKER_MODE=sg exec %q %q' "$WRAPPER" "$STAGE"

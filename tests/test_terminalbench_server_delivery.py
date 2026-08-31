@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -108,10 +111,75 @@ class TerminalBenchServerDeliveryTests(unittest.TestCase):
         )
         text = template.read_text(encoding="utf-8")
 
-        self.assertIn("SKILLOPT_RUNTIME_ROOT=", text)
-        self.assertIn("SKILLOPT_TBENCH_CONCURRENCY=1", text)
-        self.assertIn("DEEPSEEK_API_KEY=<REQUIRED>", text)
+        self.assertIn("SKILLOPT_RUNTIME_ROOT=<REQUIRED_OPERATOR_VALUE>", text)
+        self.assertIn(
+            "SKILLOPT_FORMAL_EXPERIMENT_ID=<REQUIRED_OPERATOR_VALUE>",
+            text,
+        )
+        self.assertIn(
+            "SKILLOPT_TBENCH_CONCURRENCY=<REQUIRED_POSITIVE_INTEGER>",
+            text,
+        )
+        self.assertIn("DEEPSEEK_API_KEY=<REQUIRED_SECRET>", text)
+        self.assertNotIn("SKILLOPT_TBENCH_CONCURRENCY=1", text)
         self.assertNotIn("/home/yunl", text)
+
+    def test_formal_entrypoints_have_no_operator_input_fallbacks(self) -> None:
+        wrapper = (
+            self.repository_root / "scripts" / "run_terminalbench_formal_stage.sh"
+        ).read_text(encoding="utf-8")
+        bootstrap = (
+            self.repository_root / "scripts" / "bootstrap_terminalbench_server.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("tbench-v2.1-dsv4flash-s42-formal-001", wrapper)
+        self.assertNotIn("tbench-v2.1-server-formal-001", bootstrap)
+        self.assertNotIn("SKILLOPT_TBENCH_CONCURRENCY:-1", wrapper)
+        self.assertNotIn("SKILLOPT_TBENCH_CONCURRENCY:-1", bootstrap)
+        self.assertNotIn("PROJECT_ROOT}/../skillopt-runtime", wrapper)
+        self.assertNotIn("PROJECT_ROOT}/../skillopt-runtime", bootstrap)
+
+    def test_systemd_launcher_requires_operator_owned_environment_values(self) -> None:
+        launcher = self.repository_root / "scripts" / "run_terminalbench_formal_systemd.sh"
+        required = {
+            "SKILLOPT_RUNTIME_ROOT": str(self.runtime_root),
+            "SKILLOPT_FORMAL_EXPERIMENT_ID": "server-test-001",
+            "SKILLOPT_TBENCH_CONCURRENCY": "8",
+        }
+        for missing_name in required:
+            with self.subTest(missing_name=missing_name):
+                env_file = self.root / f"missing-{missing_name}.env"
+                env_file.write_text(
+                    "\n".join(
+                        f"{name}={value}"
+                        for name, value in required.items()
+                        if name != missing_name
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                environment = dict(os.environ)
+                environment.update(
+                    {
+                        "SKILLOPT_PYTHON": sys.executable,
+                        "SKILLOPT_FORMAL_ENV_FILE": str(env_file),
+                    }
+                )
+                completed = subprocess.run(
+                    [str(launcher), "probe"],
+                    cwd=self.repository_root,
+                    env=environment,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=10,
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn(
+                    f"OPERATOR INPUT REQUIRED: {missing_name}",
+                    completed.stderr,
+                )
 
     def test_formal_entrypoints_have_no_developer_machine_paths(self) -> None:
         for relative_path in (

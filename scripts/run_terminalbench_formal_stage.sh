@@ -18,13 +18,32 @@ esac
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 PYTHON="${SKILLOPT_PYTHON:-${PROJECT_ROOT}/.venv/bin/python}"
-EXPERIMENT_ID="${SKILLOPT_FORMAL_EXPERIMENT_ID:-tbench-v2.1-dsv4flash-s42-formal-001}"
+EXPERIMENT_ID_INPUT="${SKILLOPT_FORMAL_EXPERIMENT_ID:-}"
+RUNTIME_ROOT_INPUT="${SKILLOPT_RUNTIME_ROOT:-}"
+CONCURRENCY_INPUT="${SKILLOPT_TBENCH_CONCURRENCY:-}"
+if [[ -z "$EXPERIMENT_ID_INPUT" || "$EXPERIMENT_ID_INPUT" == \<*\> ]]; then
+  echo "OPERATOR INPUT REQUIRED: SKILLOPT_FORMAL_EXPERIMENT_ID" >&2
+  exit 2
+fi
+if [[ -z "$RUNTIME_ROOT_INPUT" || "$RUNTIME_ROOT_INPUT" == \<*\> ]]; then
+  echo "OPERATOR INPUT REQUIRED: SKILLOPT_RUNTIME_ROOT" >&2
+  exit 2
+fi
+if [[ -z "$CONCURRENCY_INPUT" || "$CONCURRENCY_INPUT" == \<*\> ]]; then
+  echo "OPERATOR INPUT REQUIRED: SKILLOPT_TBENCH_CONCURRENCY" >&2
+  exit 2
+fi
+if [[ ! "$CONCURRENCY_INPUT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "SKILLOPT_TBENCH_CONCURRENCY must be a positive integer" >&2
+  exit 2
+fi
+EXPERIMENT_ID="$EXPERIMENT_ID_INPUT"
 if [[ ! -x "$PYTHON" ]]; then
   echo "SKILLOPT_PYTHON is not executable: $PYTHON" >&2
   exit 2
 fi
 RUNTIME_ROOT="$($PYTHON -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' \
-  "${SKILLOPT_RUNTIME_ROOT:-${PROJECT_ROOT}/../skillopt-runtime}")"
+  "$RUNTIME_ROOT_INPUT")"
 FORMAL_ROOT="${SKILLOPT_FORMAL_ROOT:-${RUNTIME_ROOT}/outputs/formal/${EXPERIMENT_ID}}"
 TBENCH_ROOT="${TERMINALBENCH_ROOT:-${RUNTIME_ROOT}/datasets/terminal-bench-2-1}"
 SPLIT_DIR="${TERMINALBENCH_SPLIT_DIR:-${RUNTIME_ROOT}/splits/tbench-v2.1-s42}"
@@ -56,11 +75,7 @@ if [[ "$SKILLOPT_FORMAL_DOCKER_MODE" != "sg" ]]; then
   echo "SKILLOPT_FORMAL_DOCKER_MODE=FAIL" >&2
   exit 2
 fi
-CONCURRENCY="${SKILLOPT_TBENCH_CONCURRENCY:-1}"
-if [[ ! "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
-  echo "SKILLOPT_TBENCH_CONCURRENCY must be a positive integer" >&2
-  exit 2
-fi
+CONCURRENCY="$CONCURRENCY_INPUT"
 
 export OPTIMIZER_OPENAI_COMPATIBLE_BASE_URL="https://api.deepseek.com"
 export OPTIMIZER_OPENAI_COMPATIBLE_API_KEY="$DEEPSEEK_API_KEY"

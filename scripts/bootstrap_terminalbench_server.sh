@@ -18,20 +18,27 @@ esac
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 PYTHON="${SKILLOPT_PYTHON:-${PROJECT_ROOT}/.venv/bin/python}"
-RUNTIME_ROOT="${SKILLOPT_RUNTIME_ROOT:-${PROJECT_ROOT}/../skillopt-runtime}"
-EXPERIMENT_ID="${SKILLOPT_FORMAL_EXPERIMENT_ID:-tbench-v2.1-server-formal-001}"
-CONCURRENCY="${SKILLOPT_TBENCH_CONCURRENCY:-1}"
-TBENCH_ROOT="${TERMINALBENCH_ROOT:-${RUNTIME_ROOT}/datasets/terminal-bench-2-1}"
-CACHE_ROOT="${TERMINALBENCH_FORMAL_CACHE_ROOT:-${RUNTIME_ROOT}/cache/terminal-bench-v2.1}"
-SPLIT_ROOT="${TERMINALBENCH_SPLIT_DIR:-${RUNTIME_ROOT}/splits/tbench-v2.1-s42}"
-HARBOR_CONFIG="${TERMINALBENCH_HARBOR_BASE_CONFIG:-${RUNTIME_ROOT}/harbor-configs/tbench-v2.1-formal.yaml}"
-ENV_TEMPLATE_OUT="${SKILLOPT_FORMAL_ENV_TEMPLATE_OUT:-${RUNTIME_ROOT}/terminalbench-formal.env.example}"
+RUNTIME_ROOT="${SKILLOPT_RUNTIME_ROOT:-}"
+EXPERIMENT_ID="${SKILLOPT_FORMAL_EXPERIMENT_ID:-}"
+CONCURRENCY="${SKILLOPT_TBENCH_CONCURRENCY:-}"
+TBENCH_ROOT="${TERMINALBENCH_ROOT:-}"
+CACHE_ROOT="${TERMINALBENCH_FORMAL_CACHE_ROOT:-}"
+SPLIT_ROOT="${TERMINALBENCH_SPLIT_DIR:-}"
+HARBOR_CONFIG="${TERMINALBENCH_HARBOR_BASE_CONFIG:-}"
+ENV_TEMPLATE_OUT="${SKILLOPT_FORMAL_ENV_TEMPLATE_OUT:-}"
 EXPECTED_TBENCH_HEAD="7131e4375048a0e408a8fb404b5f499d726b695b"
 EXPECTED_SPLIT_SHA="bd36fe2f37a67cd2b46149263522d833166d3a4d036c8e9af082e742ad017500"
 
-if [[ ! "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
-  echo "SKILLOPT_TBENCH_CONCURRENCY must be a positive integer" >&2
-  exit 2
+operator_value_missing() {
+  [[ -z "$1" || "$1" == \<*\> ]]
+}
+
+if ! operator_value_missing "$RUNTIME_ROOT"; then
+  TBENCH_ROOT="${TBENCH_ROOT:-${RUNTIME_ROOT}/datasets/terminal-bench-2-1}"
+  CACHE_ROOT="${CACHE_ROOT:-${RUNTIME_ROOT}/cache/terminal-bench-v2.1}"
+  SPLIT_ROOT="${SPLIT_ROOT:-${RUNTIME_ROOT}/splits/tbench-v2.1-s42}"
+  HARBOR_CONFIG="${HARBOR_CONFIG:-${RUNTIME_ROOT}/harbor-configs/tbench-v2.1-formal.yaml}"
+  ENV_TEMPLATE_OUT="${ENV_TEMPLATE_OUT:-${RUNTIME_ROOT}/terminalbench-formal.env.example}"
 fi
 
 proxy_mode() {
@@ -58,10 +65,29 @@ PROXY_MODE="$(proxy_mode)"
 
 inspect_host() {
   local blockers=0
+  local operator_inputs_required=0
   echo "PROJECT_ROOT=$PROJECT_ROOT"
-  echo "SKILLOPT_RUNTIME_ROOT=$RUNTIME_ROOT"
-  echo "SKILLOPT_FORMAL_EXPERIMENT_ID=$EXPERIMENT_ID"
-  echo "SKILLOPT_TBENCH_CONCURRENCY=$CONCURRENCY"
+  if operator_value_missing "$RUNTIME_ROOT"; then
+    echo "SKILLOPT_RUNTIME_ROOT=OPERATOR INPUT REQUIRED"
+    operator_inputs_required=$((operator_inputs_required + 1))
+  else
+    echo "SKILLOPT_RUNTIME_ROOT=$RUNTIME_ROOT"
+  fi
+  if operator_value_missing "$EXPERIMENT_ID"; then
+    echo "SKILLOPT_FORMAL_EXPERIMENT_ID=OPERATOR INPUT REQUIRED"
+    operator_inputs_required=$((operator_inputs_required + 1))
+  else
+    echo "SKILLOPT_FORMAL_EXPERIMENT_ID=$EXPERIMENT_ID"
+  fi
+  if operator_value_missing "$CONCURRENCY"; then
+    echo "SKILLOPT_TBENCH_CONCURRENCY=OPERATOR INPUT REQUIRED"
+    operator_inputs_required=$((operator_inputs_required + 1))
+  elif [[ ! "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
+    echo "SKILLOPT_TBENCH_CONCURRENCY=BLOCK positive integer required"
+    blockers=$((blockers + 1))
+  else
+    echo "SKILLOPT_TBENCH_CONCURRENCY=$CONCURRENCY"
+  fi
   echo "PROXY_MODE=$PROXY_MODE"
 
   if command -v docker >/dev/null 2>&1; then
@@ -131,7 +157,13 @@ print(f"TERMINUS_2={terminus}")
   else
     echo "GPU=NONE_OR_UNRESOLVED"
   fi
-  for path in "$RUNTIME_ROOT" "$TBENCH_ROOT" "$CACHE_ROOT"; do
+  local disk_paths=("$PROJECT_ROOT")
+  if ! operator_value_missing "$RUNTIME_ROOT"; then
+    disk_paths+=("$RUNTIME_ROOT")
+  fi
+  [[ -n "$TBENCH_ROOT" ]] && disk_paths+=("$TBENCH_ROOT")
+  [[ -n "$CACHE_ROOT" ]] && disk_paths+=("$CACHE_ROOT")
+  for path in "${disk_paths[@]}"; do
     local probe="$path"
     while [[ ! -e "$probe" && "$probe" != "/" ]]; do
       probe="$(dirname -- "$probe")"
@@ -139,7 +171,9 @@ print(f"TERMINUS_2={terminus}")
     df -Pk "$probe" 2>/dev/null | tail -n 1 | awk -v target="$path" '{print "DISK_FREE_KIB[" target "]=" $4}' || true
   done
 
-  if [[ -d "$TBENCH_ROOT/.git" ]]; then
+  if [[ -z "$TBENCH_ROOT" ]]; then
+    echo "TBENCH_CHECKOUT=OPERATOR INPUT REQUIRED: SKILLOPT_RUNTIME_ROOT"
+  elif [[ -d "$TBENCH_ROOT/.git" ]]; then
     local tbench_head tbench_status
     tbench_head="$(git -C "$TBENCH_ROOT" rev-parse HEAD 2>/dev/null || true)"
     tbench_status="$(git -C "$TBENCH_ROOT" status --short 2>/dev/null || true)"
@@ -154,7 +188,9 @@ print(f"TERMINUS_2={terminus}")
     blockers=$((blockers + 1))
   fi
 
-  if [[ -x "$PYTHON" && -f "$CACHE_ROOT/MANIFEST.tsv" ]]; then
+  if [[ -z "$CACHE_ROOT" ]]; then
+    echo "FORMAL_CACHE=OPERATOR INPUT REQUIRED: SKILLOPT_RUNTIME_ROOT"
+  elif [[ -x "$PYTHON" && -f "$CACHE_ROOT/MANIFEST.tsv" ]]; then
     if "$PYTHON" -c '
 from pathlib import Path
 import sys
@@ -172,14 +208,26 @@ print("CACHE_MANIFEST_SHA256=" + state["manifest_sha256"])
     blockers=$((blockers + 1))
   fi
 
-  if (( blockers > 0 )); then
-    echo "BOOTSTRAP_INSPECT=BLOCK blockers=$blockers"
+  if (( blockers > 0 || operator_inputs_required > 0 )); then
+    echo "BOOTSTRAP_INSPECT=BLOCK blockers=$blockers operator_inputs_required=$operator_inputs_required"
     return 2
   fi
   echo "BOOTSTRAP_INSPECT=PASS"
 }
 
 init_runtime() {
+  if operator_value_missing "$RUNTIME_ROOT"; then
+    echo "OPERATOR INPUT REQUIRED: SKILLOPT_RUNTIME_ROOT" >&2
+    exit 2
+  fi
+  if operator_value_missing "$CONCURRENCY"; then
+    echo "OPERATOR INPUT REQUIRED: SKILLOPT_TBENCH_CONCURRENCY" >&2
+    exit 2
+  fi
+  if [[ ! "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
+    echo "SKILLOPT_TBENCH_CONCURRENCY must be a positive integer" >&2
+    exit 2
+  fi
   if [[ ! -x "$PYTHON" ]]; then
     echo "repo Python is required for init: $PYTHON" >&2
     exit 2
@@ -233,6 +281,11 @@ print(json.loads((Path(sys.argv[1]) / "split_manifest.json").read_text())["seman
   echo "PORTABLE_SPLIT_SHA256=$EXPECTED_SPLIT_SHA"
   echo "HARBOR_CONFIG=$HARBOR_CONFIG"
   echo "ENVIRONMENT_TEMPLATE=$ENV_TEMPLATE_OUT"
+  if operator_value_missing "$EXPERIMENT_ID"; then
+    echo "SKILLOPT_FORMAL_EXPERIMENT_ID=OPERATOR INPUT REQUIRED before probe/preflight"
+  else
+    echo "SKILLOPT_FORMAL_EXPERIMENT_ID=$EXPERIMENT_ID"
+  fi
   echo "NEXT=copy the EnvironmentFile template outside the repo, set credentials and reviewed paths, then run inspect"
 }
 

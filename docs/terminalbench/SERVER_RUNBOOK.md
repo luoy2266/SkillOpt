@@ -18,7 +18,22 @@ it does not repair them.
 
 ## Frozen identities
 
-Use a reviewed, committed SkillOpt delivery HEAD and keep the worktree clean.
+The `terminalbench-v2.1-delivery` branch is the server handoff entry point.
+Before each formal experiment, update it with a fast-forward-only pull and
+record the exact checkout commit:
+
+```bash
+git switch terminalbench-v2.1-delivery
+git pull --ff-only
+git status --short
+git rev-parse HEAD
+```
+
+`git status --short` must produce no output. Put the `git rev-parse HEAD`
+result in `SKILLOPT_FORMAL_HEAD`; that commit SHA is the provenance lock for
+this specific formal experiment. A delivery tag is not required, and the
+repository owner does not need to predeclare one permanent delivery SHA.
+
 The server Terminal-Bench checkout must be exactly:
 
 ```text
@@ -70,13 +85,28 @@ Do not rely on a Harbor tool left in another user's home directory.
 
 ## Runtime root
 
-Choose one absolute runtime root. All default delivery paths derive from it:
+Before `probe` or `preflight`, the server operator must explicitly choose all
+three formal runtime inputs below. The repository intentionally does not
+select defaults for them:
+
+1. `SKILLOPT_RUNTIME_ROOT`: the absolute server experiment/data root.
+2. `SKILLOPT_FORMAL_EXPERIMENT_ID`: a unique identity for this formal run.
+3. `SKILLOPT_TBENCH_CONCURRENCY`: the positive-integer Harbor trial
+   concurrency selected for this server.
+
+Export the operator-selected values; the placeholders below are not runnable
+values:
 
 ```bash
-export SKILLOPT_RUNTIME_ROOT=/srv/skillopt-runtime
-export SKILLOPT_FORMAL_EXPERIMENT_ID=tbench-v2.1-dsv4flash-s42-server-001
+export SKILLOPT_RUNTIME_ROOT=<OPERATOR_SELECTED_ABSOLUTE_PATH>
+export SKILLOPT_FORMAL_EXPERIMENT_ID=<OPERATOR_SELECTED_UNIQUE_ID>
 export SKILLOPT_TBENCH_CONCURRENCY=<OPERATOR_SELECTED_POSITIVE_INTEGER>
 ```
+
+The formal lifecycle fails closed with `OPERATOR INPUT REQUIRED` when any of
+these values is missing or still contains a template placeholder. For
+`SKILLOPT_TBENCH_CONCURRENCY=N` greater than `1`, the fail-closed Docker
+`default-address-pools` and remaining subnet-capacity checks apply.
 
 Derived directories are:
 
@@ -125,6 +155,12 @@ renders a secret-free Harbor config, and copies the EnvironmentFile example.
 It refuses to overwrite an existing Harbor config or EnvironmentFile template.
 It does not download the cache or run a benchmark.
 
+`SKILLOPT_RUNTIME_ROOT` and `SKILLOPT_TBENCH_CONCURRENCY` are required for
+`init` because they determine the generated paths and Harbor config.
+`SKILLOPT_FORMAL_EXPERIMENT_ID` is not invented when absent; `init` leaves the
+committed placeholder unchanged and reports that the operator must set it
+before `probe` or `preflight`.
+
 ## EnvironmentFile
 
 Copy the generated example to a protected file outside the repository:
@@ -147,6 +183,14 @@ SKILLOPT_FORMAL_DOCKER_MODE=sg
 SKILLOPT_TBENCH_CONCURRENCY
 DEEPSEEK_API_KEY
 ```
+
+Set `SKILLOPT_FORMAL_HEAD` to the current clean delivery checkout's
+`git rev-parse HEAD` output, not to a tag name or a previously documented
+delivery commit.
+
+Do not run the copied file with its `<REQUIRED_...>` placeholders. The formal
+launcher rejects missing or unchanged operator-owned values before creating a
+systemd unit.
 
 Set both `HTTP_PROXY` and `HTTPS_PROXY`, or leave both unset. `NO_PROXY` is
 optional input; the wrapper adds localhost, Docker DNS, and actual Docker

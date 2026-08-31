@@ -218,6 +218,54 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
         self.assertIn("unknown formal stage", completed.stderr)
         self.assertEqual(self._calls(), [])
 
+    def test_all_formal_stages_require_explicit_experiment_id(self) -> None:
+        for stage in (
+            "probe",
+            "preflight",
+            "training",
+            "freeze-skill",
+            "baseline-test",
+            "skill-test",
+            "aggregate",
+        ):
+            with self.subTest(stage=stage):
+                completed = self._run(
+                    stage,
+                    overrides={"SKILLOPT_FORMAL_EXPERIMENT_ID": None},
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn(
+                    "OPERATOR INPUT REQUIRED: SKILLOPT_FORMAL_EXPERIMENT_ID",
+                    completed.stderr,
+                )
+                self.assertEqual(self._calls(), [])
+
+    def test_formal_stage_requires_explicit_runtime_root(self) -> None:
+        completed = self._run(
+            "preflight",
+            overrides={"SKILLOPT_RUNTIME_ROOT": None},
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn(
+            "OPERATOR INPUT REQUIRED: SKILLOPT_RUNTIME_ROOT",
+            completed.stderr,
+        )
+        self.assertEqual(self._calls(), [])
+
+    def test_formal_stage_requires_explicit_concurrency(self) -> None:
+        completed = self._run(
+            "preflight",
+            overrides={"SKILLOPT_TBENCH_CONCURRENCY": None},
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn(
+            "OPERATOR INPUT REQUIRED: SKILLOPT_TBENCH_CONCURRENCY",
+            completed.stderr,
+        )
+        self.assertEqual(self._calls(), [])
+
     def test_training_still_runs_preflight_before_trainer(self) -> None:
         completed = self._run("training")
 

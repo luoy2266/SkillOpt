@@ -25,17 +25,21 @@ class TerminalBenchBootstrapTests(unittest.TestCase):
         runtime_root: Path,
         *,
         proxy: bool,
+        experiment_id: str | None = "server-exp-001",
     ) -> subprocess.CompletedProcess[str]:
         environment = dict(os.environ)
         environment.update(
             {
                 "SKILLOPT_PYTHON": sys.executable,
                 "SKILLOPT_RUNTIME_ROOT": str(runtime_root),
-                "SKILLOPT_FORMAL_EXPERIMENT_ID": "server-exp-001",
                 "SKILLOPT_TBENCH_CONCURRENCY": "8",
                 "TERMINALBENCH_ROOT": str(runtime_root / "datasets" / "terminal-bench-2-1"),
             }
         )
+        if experiment_id is None:
+            environment.pop("SKILLOPT_FORMAL_EXPERIMENT_ID", None)
+        else:
+            environment["SKILLOPT_FORMAL_EXPERIMENT_ID"] = experiment_id
         for name in (
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -85,8 +89,107 @@ class TerminalBenchBootstrapTests(unittest.TestCase):
         env_template = (runtime_root / "terminalbench-formal.env.example").read_text(
             encoding="utf-8"
         )
-        self.assertIn("DEEPSEEK_API_KEY=<REQUIRED>", env_template)
+        self.assertIn("DEEPSEEK_API_KEY=<REQUIRED_SECRET>", env_template)
+        self.assertIn(
+            "SKILLOPT_TBENCH_CONCURRENCY=<REQUIRED_POSITIVE_INTEGER>",
+            env_template,
+        )
         self.assertNotIn("test-secret", env_template)
+
+    def test_inspect_reports_missing_operator_inputs_without_defaults(self) -> None:
+        environment = dict(os.environ)
+        environment["SKILLOPT_PYTHON"] = sys.executable
+        for name in (
+            "SKILLOPT_RUNTIME_ROOT",
+            "SKILLOPT_FORMAL_EXPERIMENT_ID",
+            "SKILLOPT_TBENCH_CONCURRENCY",
+            "TERMINALBENCH_ROOT",
+            "TERMINALBENCH_FORMAL_CACHE_ROOT",
+            "TERMINALBENCH_SPLIT_DIR",
+            "TERMINALBENCH_HARBOR_BASE_CONFIG",
+            "SKILLOPT_FORMAL_ENV_TEMPLATE_OUT",
+        ):
+            environment.pop(name, None)
+
+        completed = subprocess.run(
+            [str(self.script), "inspect"],
+            cwd=self.repository_root,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        for name in (
+            "SKILLOPT_RUNTIME_ROOT",
+            "SKILLOPT_FORMAL_EXPERIMENT_ID",
+            "SKILLOPT_TBENCH_CONCURRENCY",
+        ):
+            self.assertIn(f"{name}=OPERATOR INPUT REQUIRED", completed.stdout)
+        self.assertIn("operator_inputs_required=3", completed.stdout)
+        self.assertNotIn("skillopt-runtime", completed.stdout)
+
+    def test_init_requires_runtime_root_and_concurrency(self) -> None:
+        cases = (
+            (
+                "SKILLOPT_RUNTIME_ROOT",
+                {
+                    "SKILLOPT_TBENCH_CONCURRENCY": "8",
+                },
+            ),
+            (
+                "SKILLOPT_TBENCH_CONCURRENCY",
+                {
+                    "SKILLOPT_RUNTIME_ROOT": str(self.root / "runtime"),
+                },
+            ),
+        )
+        for missing_name, values in cases:
+            with self.subTest(missing_name=missing_name):
+                environment = dict(os.environ)
+                environment["SKILLOPT_PYTHON"] = sys.executable
+                environment.update(values)
+                environment.pop(missing_name, None)
+                completed = subprocess.run(
+                    [str(self.script), "init"],
+                    cwd=self.repository_root,
+                    env=environment,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=15,
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn(
+                    f"OPERATOR INPUT REQUIRED: {missing_name}",
+                    completed.stderr,
+                )
+
+    def test_init_does_not_invent_experiment_id(self) -> None:
+        runtime_root = self.root / "runtime-no-experiment"
+
+        completed = self._run_init(
+            runtime_root,
+            proxy=False,
+            experiment_id=None,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(
+            "SKILLOPT_FORMAL_EXPERIMENT_ID=OPERATOR INPUT REQUIRED before probe/preflight",
+            completed.stdout,
+        )
+        template = (runtime_root / "terminalbench-formal.env.example").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "SKILLOPT_FORMAL_EXPERIMENT_ID=<REQUIRED_OPERATOR_VALUE>",
+            template,
+        )
 
     def test_direct_and_proxy_modes_render_expected_harbor_environment(self) -> None:
         direct_root = self.root / "direct"
