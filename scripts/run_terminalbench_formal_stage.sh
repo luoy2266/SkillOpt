@@ -2,13 +2,13 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "usage: $0 probe|training|baseline-test|skill-test" >&2
+  echo "usage: $0 probe|preflight|training|baseline-test|skill-test" >&2
   exit 2
 fi
 
 STAGE="$1"
 case "$STAGE" in
-  probe|training|baseline-test|skill-test) ;;
+  probe|preflight|training|baseline-test|skill-test) ;;
   *)
     echo "unknown formal stage: $STAGE" >&2
     exit 2
@@ -79,6 +79,11 @@ fi
 mkdir -p "${FORMAL_ROOT}/manifests" "${FORMAL_ROOT}/logs"
 exec > >(tee -a "$LOG_PATH") 2>&1
 
+PREFLIGHT_CONDITION="$STAGE"
+if [[ "$STAGE" == "preflight" ]]; then
+  PREFLIGHT_CONDITION="training"
+fi
+
 PREFLIGHT=(
   .venv/bin/python scripts/preflight_terminalbench.py
   --config "$FORMAL_CONFIG"
@@ -90,7 +95,7 @@ PREFLIGHT=(
   --manifest-out "$MANIFEST"
   --log-path "$LOG_PATH"
   --experiment-id "$EXPERIMENT_ID"
-  --condition "$STAGE"
+  --condition "$PREFLIGHT_CONDITION"
   --expected-skillopt-head "$SKILLOPT_FORMAL_HEAD"
   --require-persistent-runtime
 )
@@ -101,15 +106,23 @@ COMMON_OVERRIDES=(
   "env.out_root=${OUTPUT_ROOT}"
 )
 
+run_formal_preflight() {
+  "${PREFLIGHT[@]}" "$@"
+}
+
 case "$STAGE" in
+  preflight)
+    run_formal_preflight --skill "$INITIAL_SKILL"
+    exit 0
+    ;;
   training)
-    "${PREFLIGHT[@]}" --skill "$INITIAL_SKILL"
+    run_formal_preflight --skill "$INITIAL_SKILL"
     exec .venv/bin/python scripts/train.py \
       --config "$FORMAL_CONFIG" \
       --cfg-options "${COMMON_OVERRIDES[@]}"
     ;;
   baseline-test)
-    "${PREFLIGHT[@]}" --skill "$INITIAL_SKILL"
+    run_formal_preflight --skill "$INITIAL_SKILL"
     exec .venv/bin/python scripts/eval_only.py \
       --config "$FORMAL_CONFIG" \
       --skill "$INITIAL_SKILL" \
@@ -118,7 +131,7 @@ case "$STAGE" in
     ;;
   skill-test)
     LEARNED_SKILL="${TRAINING_OUT}/best_skill.md"
-    "${PREFLIGHT[@]}" \
+    run_formal_preflight \
       --skill "$LEARNED_SKILL" \
       --training-output "$TRAINING_OUT"
     exec .venv/bin/python scripts/eval_only.py \

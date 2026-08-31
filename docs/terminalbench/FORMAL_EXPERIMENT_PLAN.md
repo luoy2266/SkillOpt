@@ -303,7 +303,7 @@ Do not assume an existing user manager receives the new supplementary group.
 The frozen service path always enters the group explicitly:
 
 ```text
-systemd --user → sg docker -c → formal wrapper → preflight → stage
+systemd --user → sg docker -c → formal wrapper → preflight-only or preflight → stage
 ```
 
 This is valid only after the user is a Docker-group member, so `sg docker` does
@@ -323,7 +323,38 @@ committed HEAD, and cache contract as the real stages. It prints only
 completion, and uses `--collect` so the transient unit does not remain installed.
 
 After installing the environment file and setting the committed HEAD, launch
-exactly one stage per transient user unit:
+the preflight-only stage first:
+
+```bash
+systemd-run --user --unit=skillopt-tbench-formal-preflight \
+  --no-ask-password \
+  --property=Type=exec \
+  --property=EnvironmentFile=/home/yunl/.config/skillopt/terminalbench-formal.env \
+  --collect \
+  /usr/bin/sg docker -c \
+  'SKILLOPT_FORMAL_DOCKER_MODE=sg exec /home/yunl/projects/SkillOpt/scripts/run_terminalbench_formal_stage.sh preflight'
+```
+
+This runs the same fail-closed `scripts/preflight_terminalbench.py` invocation
+and wrapper bootstrap as the execution stages, writes the preflight manifest and
+log, and exits without starting Trainer, evaluation, or Harbor benchmark work.
+It validates the prospective training condition with the blank initial skill,
+so the unchanged manifest schema records `condition: training`; the dedicated
+preflight artifact paths below identify it as the preflight-only invocation.
+For a formal root `${FORMAL_ROOT}`, its reserved identities are:
+
+```text
+output identity: ${FORMAL_ROOT}/preflight
+manifest:        ${FORMAL_ROOT}/manifests/preflight.experiment_manifest.json
+log:             ${FORMAL_ROOT}/logs/preflight.console.log
+```
+
+These paths do not occupy `${FORMAL_ROOT}/training`, `baseline-test`, or
+`skill-test`. Reusing the same preflight identity fails closed through the
+existing fresh-manifest/output checks.
+
+Inspect the successful preflight manifest before launching exactly one
+execution stage per transient user unit:
 
 ```bash
 systemd-run --user --unit=skillopt-tbench-formal-training \
@@ -351,9 +382,14 @@ systemd-run --user --unit=skillopt-tbench-formal-skill-test \
   'SKILLOPT_FORMAL_DOCKER_MODE=sg exec /home/yunl/projects/SkillOpt/scripts/run_terminalbench_formal_stage.sh skill-test'
 ```
 
-Run them in order: training, baseline-test, then skill-test. The wrapper invokes
-the static preflight before each stage, uses one unique condition output, and
-does not contain any retry or cleanup path.
+Run them in order: preflight-only, inspect its PASS manifest, training, freeze
+the retained best skill and hashes, baseline-test, then skill-test. Training,
+baseline-test, and skill-test each rerun the same fail-closed preflight in their
+own current service context before executing. This defense-in-depth catches
+HEAD, configuration, credential, Docker, cache, output, or other runtime drift
+between the earlier audit and the actual stage; it is not a repeated experiment
+or benchmark retry. Each stage uses one unique condition output and the wrapper
+contains no retry or cleanup path.
 
 Baseline-test and skill-test remain two sequential Harbor jobs. The adapter has
 no natural cross-process global queue to share without adding new orchestration.
