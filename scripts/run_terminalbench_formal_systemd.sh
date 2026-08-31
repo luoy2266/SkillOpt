@@ -2,13 +2,13 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "usage: $0 probe|preflight|training|baseline-test|skill-test" >&2
+  echo "usage: $0 probe|preflight|training|freeze-skill|baseline-test|skill-test|aggregate" >&2
   exit 2
 fi
 
 STAGE="$1"
 case "$STAGE" in
-  probe|preflight|training|baseline-test|skill-test) ;;
+  probe|preflight|training|freeze-skill|baseline-test|skill-test|aggregate) ;;
   *)
     echo "unknown formal stage: $STAGE" >&2
     exit 2
@@ -37,7 +37,7 @@ UNIT="$($PYTHON "$SCRIPT_DIR/terminalbench_formal_identity.py" \
 printf -v WRAPPER_COMMAND 'SKILLOPT_FORMAL_DOCKER_MODE=sg exec %q %q' "$WRAPPER" "$STAGE"
 
 WAIT_ARGS=()
-if [[ "$STAGE" == "probe" || "$STAGE" == "preflight" ]]; then
+if [[ "$STAGE" == "probe" || "$STAGE" == "preflight" || "$STAGE" == "freeze-skill" || "$STAGE" == "aggregate" ]]; then
   WAIT_ARGS+=(--wait)
 fi
 

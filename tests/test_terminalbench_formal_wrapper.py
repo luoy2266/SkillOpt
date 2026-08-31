@@ -60,7 +60,13 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
             + "raise SystemExit(int(os.environ.get('FAKE_PREFLIGHT_EXIT', '0')))\n",
             encoding="utf-8",
         )
-        for name in ("train.py", "eval_only.py", "probe_terminalbench_formal_service.py"):
+        for name in (
+            "train.py",
+            "eval_only.py",
+            "freeze_terminalbench_skill.py",
+            "aggregate_terminalbench_results.py",
+            "probe_terminalbench_formal_service.py",
+        ):
             (scripts_dir / name).write_text(logger, encoding="utf-8")
 
         docker = self.fake_bin / "docker"
@@ -243,6 +249,65 @@ class TerminalBenchFormalWrapperTests(unittest.TestCase):
                     [call["command"] for call in self._calls()],
                     ["preflight_terminalbench.py", "eval_only.py"],
                 )
+
+    def test_skill_test_uses_frozen_skill_and_provenance(self) -> None:
+        completed = self._run("skill-test")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        calls = self._calls()
+        preflight_args = calls[0]["argv"]
+        eval_args = calls[1]["argv"]
+        frozen_root = self.root / "runtime" / "skills" / "experiment-001"
+        self.assertEqual(
+            self._argument(preflight_args, "--skill"),
+            str(frozen_root / "best_skill.md"),
+        )
+        self.assertEqual(
+            self._argument(preflight_args, "--skill-provenance"),
+            str(frozen_root / "skill_provenance.json"),
+        )
+        self.assertEqual(
+            self._argument(eval_args, "--skill"),
+            str(frozen_root / "best_skill.md"),
+        )
+
+    def test_freeze_stage_has_no_preflight_trainer_or_eval_fallthrough(self) -> None:
+        completed = self._run("freeze-skill")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        calls = self._calls()
+        self.assertEqual(
+            [call["command"] for call in calls],
+            ["freeze_terminalbench_skill.py"],
+        )
+        arguments = calls[0]["argv"]
+        self.assertEqual(
+            self._argument(arguments, "--training-output"),
+            str(self.formal_root / "training"),
+        )
+        self.assertEqual(
+            self._argument(arguments, "--output-root"),
+            str(self.root / "runtime" / "skills" / "experiment-001"),
+        )
+
+    def test_aggregate_stage_is_read_only_over_evaluation_artifacts(self) -> None:
+        completed = self._run("aggregate")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        calls = self._calls()
+        self.assertEqual(
+            [call["command"] for call in calls],
+            ["aggregate_terminalbench_results.py"],
+        )
+        arguments = calls[0]["argv"]
+        self.assertEqual(
+            self._argument(arguments, "--baseline-output"),
+            str(self.formal_root / "baseline-test"),
+        )
+        self.assertEqual(
+            self._argument(arguments, "--skill-output"),
+            str(self.formal_root / "skill-test"),
+        )
 
     def test_evaluation_stages_stop_when_preflight_fails(self) -> None:
         for stage in ("baseline-test", "skill-test"):

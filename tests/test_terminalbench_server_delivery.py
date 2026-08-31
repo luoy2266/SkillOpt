@@ -123,6 +123,22 @@ class TerminalBenchServerDeliveryTests(unittest.TestCase):
                 text = (self.repository_root / relative_path).read_text(encoding="utf-8")
                 self.assertNotIn("/home/yunl", text)
 
+    def test_systemd_launcher_exposes_complete_delivery_lifecycle(self) -> None:
+        launcher = (
+            self.repository_root / "scripts" / "run_terminalbench_formal_systemd.sh"
+        ).read_text(encoding="utf-8")
+
+        for stage in (
+            "probe",
+            "preflight",
+            "training",
+            "freeze-skill",
+            "baseline-test",
+            "skill-test",
+            "aggregate",
+        ):
+            self.assertIn(stage, launcher)
+
     def test_manifest_concurrency_contract_accepts_positive_values_only(self) -> None:
         schema = json.loads(
             (

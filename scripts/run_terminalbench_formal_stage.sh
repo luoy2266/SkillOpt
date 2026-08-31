@@ -2,13 +2,13 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "usage: $0 probe|preflight|training|baseline-test|skill-test" >&2
+  echo "usage: $0 probe|preflight|training|freeze-skill|baseline-test|skill-test|aggregate" >&2
   exit 2
 fi
 
 STAGE="$1"
 case "$STAGE" in
-  probe|preflight|training|baseline-test|skill-test) ;;
+  probe|preflight|training|freeze-skill|baseline-test|skill-test|aggregate) ;;
   *)
     echo "unknown formal stage: $STAGE" >&2
     exit 2
@@ -35,6 +35,9 @@ LOCK_ROOT="${SKILLOPT_FORMAL_LOCK_ROOT:-${RUNTIME_ROOT}/locks}"
 SKILLS_ROOT="${SKILLOPT_FORMAL_SKILLS_ROOT:-${RUNTIME_ROOT}/skills/${EXPERIMENT_ID}}"
 INITIAL_SKILL="${PROJECT_ROOT}/skillopt/envs/terminalbench/skills/initial.md"
 TRAINING_OUT="${FORMAL_ROOT}/training"
+TRAINING_MANIFEST="${FORMAL_ROOT}/manifests/training.experiment_manifest.json"
+FROZEN_SKILL="${SKILLS_ROOT}/best_skill.md"
+SKILL_PROVENANCE="${SKILLS_ROOT}/skill_provenance.json"
 OUTPUT_ROOT="${FORMAL_ROOT}/${STAGE}"
 MANIFEST="${FORMAL_ROOT}/manifests/${STAGE}.experiment_manifest.json"
 if [[ -n "${SKILLOPT_FORMAL_LOG_ROOT:-}" ]]; then
@@ -141,7 +144,7 @@ acquire_experiment_lock() {
 }
 
 case "$STAGE" in
-  training|baseline-test|skill-test) acquire_experiment_lock ;;
+  training|freeze-skill|baseline-test|skill-test|aggregate) acquire_experiment_lock ;;
 esac
 
 cd "$PROJECT_ROOT"
@@ -188,6 +191,24 @@ run_formal_preflight() {
 }
 
 case "$STAGE" in
+  freeze-skill)
+    exec "$PYTHON" scripts/freeze_terminalbench_skill.py \
+      --experiment-id "$EXPERIMENT_ID" \
+      --training-output "$TRAINING_OUT" \
+      --training-manifest "$TRAINING_MANIFEST" \
+      --output-root "$SKILLS_ROOT" \
+      --expected-skillopt-head "$SKILLOPT_FORMAL_HEAD"
+    ;;
+  aggregate)
+    exec "$PYTHON" scripts/aggregate_terminalbench_results.py \
+      --experiment-id "$EXPERIMENT_ID" \
+      --baseline-output "${FORMAL_ROOT}/baseline-test" \
+      --baseline-manifest "${FORMAL_ROOT}/manifests/baseline-test.experiment_manifest.json" \
+      --skill-output "${FORMAL_ROOT}/skill-test" \
+      --skill-manifest "${FORMAL_ROOT}/manifests/skill-test.experiment_manifest.json" \
+      --skill-provenance "$SKILL_PROVENANCE" \
+      --output-root "$OUTPUT_ROOT"
+    ;;
   preflight)
     run_formal_preflight --skill "$INITIAL_SKILL"
     exit 0
@@ -207,13 +228,12 @@ case "$STAGE" in
       --cfg-options "${COMMON_OVERRIDES[@]}"
     ;;
   skill-test)
-    LEARNED_SKILL="${TRAINING_OUT}/best_skill.md"
     run_formal_preflight \
-      --skill "$LEARNED_SKILL" \
-      --training-output "$TRAINING_OUT"
+      --skill "$FROZEN_SKILL" \
+      --skill-provenance "$SKILL_PROVENANCE"
     exec "$PYTHON" scripts/eval_only.py \
       --config "$FORMAL_CONFIG" \
-      --skill "$LEARNED_SKILL" \
+      --skill "$FROZEN_SKILL" \
       --split valid_unseen \
       --cfg-options "${COMMON_OVERRIDES[@]}"
     ;;

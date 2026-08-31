@@ -11,6 +11,11 @@
 
 > 📖 **For installation, data preparation, training/eval commands, configuration, and framework internals, start with the versioned [SkillOpt documentation](https://github.com/microsoft/SkillOpt/blob/main/docs/index.md). A concise rendered overview is available in the [Documentation & Reproduction Guide](https://microsoft.github.io/SkillOpt/docs/guideline.html), and longer-form engineering analysis appears on the [Technical Blog](https://microsoft.github.io/SkillOpt/blog/). We also maintain a [Changelog](CHANGELOG.md) for released and unreleased changes.**
 
+> **Terminal-Bench v2.1 server handoff:** see
+> [`docs/terminalbench/SERVER_RUNBOOK.md`](docs/terminalbench/SERVER_RUNBOOK.md).
+> From a fresh checkout, start with
+> `scripts/bootstrap_terminalbench_server.sh inspect`.
+
 ---
 
 ## News 🔥🔥🔥

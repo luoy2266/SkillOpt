@@ -313,7 +313,10 @@
         "is_blank",
         "training_step",
         "selection_score",
-        "origin"
+        "origin",
+        "frozen_provenance_path",
+        "frozen_provenance_sha256",
+        "source_training_manifest_sha256"
       ],
       "properties": {
         "path": {"type": "string"},
@@ -328,7 +331,20 @@
         "is_blank": {"type": "boolean"},
         "training_step": {"type": ["integer", "null"], "minimum": 0},
         "selection_score": {"type": ["number", "null"]},
-        "origin": {"type": ["string", "null"]}
+        "origin": {"type": ["string", "null"]},
+        "frozen_provenance_path": {"type": ["string", "null"]},
+        "frozen_provenance_sha256": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        },
+        "source_training_manifest_sha256": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        }
       }
     },
     "artifacts": {

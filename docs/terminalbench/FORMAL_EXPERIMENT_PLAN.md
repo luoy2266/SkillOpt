@@ -159,22 +159,34 @@ No skill text is concatenated into the agent system prompt.
 - `best_skill.md` is the validation-best retained state and is the only formal
   learned skill used on test.
 
-Before skill-test, the preflight records the exact `best_skill.md` bytes,
-SHA-256, deterministic native `SKILL.md` SHA-256, `best_step`, `best_score`, and
-`best_origin` from `runtime_state.json`.
+After training, the dedicated `freeze-skill` stage fail-closed validates the
+completed summary, derived step count, history, every step record, runtime
+best/current state, and `evaluation.eval_test=false`. It then copies the exact
+`best_skill.md` bytes to `${SKILLOPT_RUNTIME_ROOT}/skills/${EXPERIMENT_ID}/`,
+reuses the deterministic native `SKILL.md` renderer, and records source hashes,
+`best_step`, `best_score`, and `best_origin` in `skill_provenance.json`.
+
+Skill-test accepts only this frozen raw artifact and provenance. A blank
+validation-best skill remains valid and maps to Harbor `skills=[]`; no rejected
+candidate is substituted.
 
 ## Output namespace
 
 Use one immutable experiment ID:
 
 ```text
-/home/yunl/projects/skillopt-runtime/outputs/formal/
-  tbench-v2.1-dsv4flash-s42-formal-001/
+${SKILLOPT_RUNTIME_ROOT}/outputs/formal/
+  ${EXPERIMENT_ID}/
     training/
     baseline-test/
     skill-test/
+    aggregate/
     manifests/
-    logs/
+
+${SKILLOPT_RUNTIME_ROOT}/skills/${EXPERIMENT_ID}/
+  best_skill.md
+  terminalbench-skill/SKILL.md
+  skill_provenance.json
 ```
 
 Every condition has a distinct output root, log, and manifest. An existing
@@ -328,17 +340,11 @@ committed HEAD, and cache contract as the real stages. It prints only
 `SET`/`MISSING` and `PASS`/`FAIL`, starts no Trainer/Harbor/model work, waits for
 completion, and uses `--collect` so the transient unit does not remain installed.
 
-After installing the environment file and setting the committed HEAD, launch
-the preflight-only stage first:
+After installing the environment file and setting the committed HEAD, use the
+portable systemd launcher rather than hand-building transient units:
 
 ```bash
-systemd-run --user --unit=skillopt-tbench-formal-preflight \
-  --no-ask-password \
-  --property=Type=exec \
-  --property=EnvironmentFile=/home/yunl/.config/skillopt/terminalbench-formal.env \
-  --collect \
-  /usr/bin/sg docker -c \
-  'SKILLOPT_FORMAL_DOCKER_MODE=sg exec /home/yunl/projects/SkillOpt/scripts/run_terminalbench_formal_stage.sh preflight'
+scripts/run_terminalbench_formal_systemd.sh preflight
 ```
 
 This runs the same fail-closed `scripts/preflight_terminalbench.py` invocation
@@ -359,47 +365,29 @@ These paths do not occupy `${FORMAL_ROOT}/training`, `baseline-test`, or
 `skill-test`. Reusing the same preflight identity fails closed through the
 existing fresh-manifest/output checks.
 
-Inspect the successful preflight manifest before launching exactly one
-execution stage per transient user unit:
+Inspect the successful preflight manifest, then run the complete lifecycle in
+order:
 
 ```bash
-systemd-run --user --unit=skillopt-tbench-formal-training \
-  --no-ask-password \
-  --property=Type=exec \
-  --property=EnvironmentFile=/home/yunl/.config/skillopt/terminalbench-formal.env \
-  --collect \
-  /usr/bin/sg docker -c \
-  'SKILLOPT_FORMAL_DOCKER_MODE=sg exec /home/yunl/projects/SkillOpt/scripts/run_terminalbench_formal_stage.sh training'
-
-systemd-run --user --unit=skillopt-tbench-formal-baseline-test \
-  --no-ask-password \
-  --property=Type=exec \
-  --property=EnvironmentFile=/home/yunl/.config/skillopt/terminalbench-formal.env \
-  --collect \
-  /usr/bin/sg docker -c \
-  'SKILLOPT_FORMAL_DOCKER_MODE=sg exec /home/yunl/projects/SkillOpt/scripts/run_terminalbench_formal_stage.sh baseline-test'
-
-systemd-run --user --unit=skillopt-tbench-formal-skill-test \
-  --no-ask-password \
-  --property=Type=exec \
-  --property=EnvironmentFile=/home/yunl/.config/skillopt/terminalbench-formal.env \
-  --collect \
-  /usr/bin/sg docker -c \
-  'SKILLOPT_FORMAL_DOCKER_MODE=sg exec /home/yunl/projects/SkillOpt/scripts/run_terminalbench_formal_stage.sh skill-test'
+scripts/run_terminalbench_formal_systemd.sh training
+scripts/run_terminalbench_formal_systemd.sh freeze-skill
+scripts/run_terminalbench_formal_systemd.sh baseline-test
+scripts/run_terminalbench_formal_systemd.sh skill-test
+scripts/run_terminalbench_formal_systemd.sh aggregate
 ```
 
-Run them in order: preflight-only, inspect its PASS manifest, training, freeze
-the retained best skill and hashes, baseline-test, then skill-test. Training,
-baseline-test, and skill-test each rerun the same fail-closed preflight in their
-own current service context before executing. This defense-in-depth catches
+Training, baseline-test, and skill-test each rerun the same fail-closed
+preflight in their own current service context before executing. This
+defense-in-depth catches
 HEAD, configuration, credential, Docker, cache, output, or other runtime drift
 between the earlier audit and the actual stage; it is not a repeated experiment
 or benchmark retry. Each stage uses one unique condition output and the wrapper
 contains no retry or cleanup path.
 
-Baseline-test and skill-test remain two sequential Harbor jobs. The adapter has
+Baseline-test and skill-test remain sequential formal stages. The adapter has
 no natural cross-process global queue to share without adding new orchestration.
-Sequential execution with `n_concurrent_trials=1` preserves the same 71 test
+The experiment-scoped lock prevents accidental `2N` overlap, while sequential
+execution with the operator-frozen concurrency preserves the same 71 test
 IDs, Harbor config, attempts, retries, and concurrency; only the native skill
 directory and result/provenance identity differ.
 
@@ -429,7 +417,8 @@ Hashes and paths are retained alongside these snapshots.
 `scripts/preflight_terminalbench.py` refuses dirty or wrong revisions, split
 drift, config/model drift, missing credentials/proxy entries, Docker failure,
 insufficient declared task storage, reused outputs/manifests, nonblank baseline
-skills, and learned skills not sourced from `training/best_skill.md`. On success
+skills, and learned skills not sourced from the validated frozen skill
+provenance. On success
 it writes a secret-free manifest conforming to
 `configs/terminalbench/experiment_manifest.schema.json`.
 

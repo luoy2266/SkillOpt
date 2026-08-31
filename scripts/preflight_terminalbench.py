@@ -27,6 +27,7 @@ from skillopt.envs.terminalbench.skill_pack import (
     is_semantically_blank,
     render_skill_artifact,
 )
+from scripts.freeze_terminalbench_skill import FreezeFailure, validate_frozen_skill
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_BRANCH = "terminalbench-v2.1"
@@ -894,7 +895,8 @@ def _skill_state(
     skill_path: Path,
     *,
     condition: str,
-    training_output: Path | None,
+    experiment_id: str,
+    skill_provenance: Path | None,
 ) -> dict[str, Any]:
     if not skill_path.is_file():
         raise PreflightFailure(f"skill file is missing: {skill_path}")
@@ -903,24 +905,36 @@ def _skill_state(
     training_step: int | None = None
     selection_score: float | None = None
     origin: str | None = None
+    frozen_provenance_path: str | None = None
+    frozen_provenance_sha256: str | None = None
+    source_training_manifest_sha256: str | None = None
     if condition in {"training", "baseline-test"}:
         if not blank:
             raise PreflightFailure(f"{condition} requires the blank initial skill")
     else:
-        if blank:
-            raise PreflightFailure("skill-test requires a nonblank learned skill")
-        if training_output is None:
-            raise PreflightFailure("skill-test requires --training-output")
-        expected = (training_output / "best_skill.md").resolve()
-        if skill_path.resolve() != expected:
-            raise PreflightFailure("skill-test must use training_output/best_skill.md")
-        state_path = training_output / "runtime_state.json"
-        if not state_path.is_file():
-            raise PreflightFailure(f"missing training runtime state: {state_path}")
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        training_step = int(state["best_step"])
-        selection_score = float(state["best_score"])
-        origin = str(state["best_origin"])
+        if skill_provenance is None:
+            raise PreflightFailure("skill-test requires --skill-provenance")
+        try:
+            frozen = validate_frozen_skill(
+                skill_provenance,
+                expected_experiment_id=experiment_id,
+            )
+        except FreezeFailure as exc:
+            raise PreflightFailure(str(exc)) from exc
+        if skill_path.resolve() != frozen["best_skill_path"]:
+            raise PreflightFailure("skill-test must use the frozen best_skill.md artifact")
+        if content != frozen["content"]:
+            raise PreflightFailure("skill-test skill bytes do not match frozen provenance")
+        provenance = frozen["provenance"]
+        selection = provenance["selection"]
+        training_step = int(selection["best_step"])
+        selection_score = float(selection["best_score"])
+        origin = str(selection["best_origin"])
+        frozen_provenance_path = str(frozen["provenance_path"])
+        frozen_provenance_sha256 = _sha256(frozen["provenance_path"])
+        source_training_manifest_sha256 = str(
+            provenance["source_training"]["manifest_sha256"]
+        )
     native_sha256 = None
     if not blank:
         native_sha256 = hashlib.sha256(render_skill_artifact(content)).hexdigest()
@@ -933,6 +947,9 @@ def _skill_state(
         "training_step": training_step,
         "selection_score": selection_score,
         "origin": origin,
+        "frozen_provenance_path": frozen_provenance_path,
+        "frozen_provenance_sha256": frozen_provenance_sha256,
+        "source_training_manifest_sha256": source_training_manifest_sha256,
     }
 
 
@@ -989,7 +1006,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--experiment-id", required=True)
     parser.add_argument("--condition", choices=("training", "baseline-test", "skill-test"), required=True)
     parser.add_argument("--skill", required=True)
-    parser.add_argument("--training-output")
+    parser.add_argument("--skill-provenance")
     parser.add_argument("--expected-skillopt-head", required=True)
     parser.add_argument("--concurrency", required=True)
     parser.add_argument("--require-persistent-runtime", action="store_true")
@@ -1009,9 +1026,9 @@ def main() -> None:
     manifest_path = Path(args.manifest_out).expanduser().resolve()
     log_path = Path(args.log_path).expanduser().resolve()
     skill_path = Path(args.skill).expanduser().resolve()
-    training_output = (
-        Path(args.training_output).expanduser().resolve()
-        if args.training_output
+    skill_provenance = (
+        Path(args.skill_provenance).expanduser().resolve()
+        if args.skill_provenance
         else None
     )
 
@@ -1088,7 +1105,8 @@ def main() -> None:
     skill = _skill_state(
         skill_path,
         condition=args.condition,
-        training_output=training_output,
+        experiment_id=args.experiment_id,
+        skill_provenance=skill_provenance,
     )
     cli_overrides = [
         f"env.split_dir={split_dir}",

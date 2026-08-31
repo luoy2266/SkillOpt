@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import sys
@@ -50,6 +51,50 @@ from skillopt.utils import compute_score
 
 _OPENAI_DEFAULT_MODEL_SENTINELS = {"gpt-5.4", "gpt-5.5"}
 _ROLE_BACKEND_DEFAULTS = (None, "", "openai_chat")
+_TERMINALBENCH_RESULT_FIELDS = (
+    "id",
+    "hard",
+    "soft",
+    "raw_reward",
+    "trial_status",
+    "harbor_result_path",
+    "harbor_config_path",
+    "harbor_job_dir",
+    "skill_sha256",
+)
+
+
+def _write_terminalbench_eval_results(
+    *,
+    out_root: str,
+    split: str,
+    skill_path: str,
+    skill_content: str,
+    results: list[dict],
+) -> None:
+    records = []
+    for index, result in enumerate(results):
+        if not isinstance(result, dict):
+            raise TypeError(f"Terminal-Bench result {index} must be a mapping")
+        missing = [name for name in _TERMINALBENCH_RESULT_FIELDS if name not in result]
+        if missing:
+            raise ValueError(
+                f"Terminal-Bench result {index} is missing aggregate fields: {missing}"
+            )
+        records.append({name: result[name] for name in _TERMINALBENCH_RESULT_FIELDS})
+    payload = {
+        "schema_version": "skillopt-terminalbench-eval-results-v1",
+        "split": split,
+        "n_items": len(records),
+        "skill": {
+            "path": skill_path,
+            "raw_sha256": hashlib.sha256(skill_content.encode("utf-8")).hexdigest(),
+        },
+        "results": records,
+    }
+    with open(os.path.join(out_root, "eval_results.json"), "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
 
 
 def _set_role_if_default(
@@ -601,6 +646,15 @@ def main() -> None:
     }
     with open(os.path.join(out_root, "eval_summary.json"), "w") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
+
+    if cfg.get("env") == "terminalbench":
+        _write_terminalbench_eval_results(
+            out_root=out_root,
+            split=split,
+            skill_path=skill_path,
+            skill_content=skill_content,
+            results=results,
+        )
 
     print(f"  Saved to: {out_root}")
 
